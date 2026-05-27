@@ -642,27 +642,43 @@ The wire codec converts JS values ↔ message bodies. The default `JsonBodyCodec
 - Encodes/decodes as UTF-8 JSON
 - Round-trips `Date` instances via `{ "$date": "<ISO>" }`
 - Encodes ObjectId-like values (duck-typed on `_bsontype === 'ObjectId'`) as `{ "$oid": "<hex>" }`
-- Leaves `$oid` as a marker object on decode (the library has no mongoose / bson dependency)
+- **Auto-rehydrates `$oid` to a native ObjectId on decode**: probes `mongoose`
+  (then `bson`) at module load and, if present, returns `new mongoose.Types.ObjectId(hex)`
+  (or `new bson.ObjectId(hex)`). If neither is installed, the marker object
+  `{ "$oid": "<hex>" }` is returned untouched.
 
-To rehydrate to real mongoose `ObjectId`, msgpack, protobuf, or anything else, provide your own:
+This means projects using mongoose / bson get real `ObjectId` instances in
+their `@Subscribe` handler payloads with zero configuration. The library
+itself stays dependency-free — neither package is declared as a peer dep,
+the lookup is a soft `require(pkg)` in a try-catch.
+
+For custom rehydration (msgpack body, a non-mongoose ObjectId implementation,
+keeping the raw marker, …), extend `JsonBodyCodec` and override the protected
+`restoreOid(hex)` hook:
 
 ```ts
-import { Types } from 'mongoose';
-import { AmqpModule, type AmqpBodyCodec, JsonBodyCodec } from '@softwarity/nestjs-amqp';
+import { AmqpModule, JsonBodyCodec } from '@softwarity/nestjs-amqp';
 
-class MongooseAwareCodec extends JsonBodyCodec {
-  decode(body: unknown): unknown {
-    const v = super.decode(body);
-    return rehydrateOids(v);
+class MarkerCodec extends JsonBodyCodec {
+  // Skip auto-detection: keep `$oid` as a plain marker object for downstream
+  // processing. The walk is single-pass (no second `super.decode` traversal).
+  protected restoreOid(hex: string): unknown {
+    return { $oid: hex };
   }
 }
 
-function rehydrateOids(v: unknown): unknown {
-  // walk and convert {$oid: hex} -> new Types.ObjectId(hex)
-  // ...
-}
+AmqpModule.forRoot({ appName: 'svc', bodyCodec: new MarkerCodec() });
+```
 
-AmqpModule.forRoot({ appName: 'svc', bodyCodec: new MongooseAwareCodec() });
+The same hook lets you swap to a different ObjectId implementation, or do
+type tagging:
+
+```ts
+class TaggedCodec extends JsonBodyCodec {
+  protected restoreOid(hex: string): unknown {
+    return { kind: 'OID', hex };
+  }
+}
 ```
 
 ## DLQ browser (optional)

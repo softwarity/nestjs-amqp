@@ -7,6 +7,7 @@ import { filter, take } from 'rxjs/operators';
 import { AmqpConnectionError } from './amqp.errors';
 import { AMQP_MODULE_OPTIONS, type ResolvedAmqpModuleOptions } from './amqp.options';
 import type { IncomingMessage, StreamOffset } from './amqp.types';
+import { normalizeIncoming, toRheaOutgoing } from './rhea-adapter';
 
 /**
  * Low-level rhea wrapper. Owns the single AMQP 1.0 Connection, the receiver
@@ -127,7 +128,7 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
         receiver.on('receiver_open', () => this.logger.debug(`receiver_open '${address}'`));
         receiver.on('message', (ctx) => {
           if (!ctx.message || !ctx.delivery) return;
-          subscriber.next({ address, message: ctx.message, delivery: ctx.delivery });
+          subscriber.next({ address, message: normalizeIncoming(ctx.message), delivery: ctx.delivery });
         });
         receiver.on('receiver_error', (ctx) => {
           this.logger.warn(`receiver_error '${address}': ${describeAmqpError(extractAmqpError(ctx))}`);
@@ -162,6 +163,11 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
    * Publish `message` on `address`. Sender pooled per-address. Fire-and-forget
    * at this layer: if the broker is not connected, the call is logged and
    * dropped. Reply correlation is the publisher's concern, not this method's.
+   *
+   * `message.properties` (the AMQP 1.0 standard properties — `reply_to`,
+   * `correlation_id`, `message_id`, `subject`, …) is shaped as a nested object
+   * by the public API; `toRheaOutgoing` flattens it before reaching rhea, see
+   * the function for why.
    */
   publish(address: string, message: Message): void {
     if (!this.options.enabled) return;
@@ -171,7 +177,7 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
       return;
     }
     const sender = this.getOrCreateSender(conn, this.toBrokerAddress(address));
-    sender.send(message);
+    sender.send(toRheaOutgoing(message));
   }
 
   private openReplyReceiver(conn: Connection): void {
@@ -196,12 +202,13 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
     });
     receiver.on('message', (ctx) => {
       if (!ctx.message || !ctx.delivery) return;
-      const corrId = ctx.message.properties?.correlation_id;
+      const message = normalizeIncoming(ctx.message);
+      const corrId = message.properties?.correlation_id;
       if (typeof corrId !== 'string' || !corrId.startsWith(prefixMatch)) {
         ctx.delivery.accept();
         return;
       }
-      this.repliesSubject.next({ address, message: ctx.message, delivery: ctx.delivery });
+      this.repliesSubject.next({ address, message, delivery: ctx.delivery });
     });
     receiver.on('receiver_error', (ctx) => {
       this.logger.warn(`reply receiver_error: ${describeAmqpError(extractAmqpError(ctx))}`);
