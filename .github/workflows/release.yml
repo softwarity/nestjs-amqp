@@ -1,0 +1,31 @@
+name: Create Tag/Release
+run-name: ${{ github.actor }} run build on ${{ github.repository }}
+on:
+  workflow_dispatch:
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Verify NPM token is valid
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+          npm whoami --registry https://registry.npmjs.org/
+      - run: git config user.name "$GITHUB_ACTOR"
+      - run: git config user.email ""
+      - name: Version, prepare next release notes, and push
+        run: |
+          npm version patch
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          NEXT_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+          sed -i "s/^# Release Notes$/# Release Notes\n\n## $NEXT_VERSION\n\n---/" RELEASE_NOTES.md
+          git add RELEASE_NOTES.md
+          git commit --amend --no-edit
+          git push --all
+          git push --tags

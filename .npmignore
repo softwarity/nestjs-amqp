@@ -1,0 +1,17 @@
+src
+test
+docs
+coverage
+node_modules
+*.log
+.github
+.eslintrc*
+eslint.config.*
+.prettierrc*
+.editorconfig
+tsconfig*.json
+jest.config.*
+.gitignore
+.npmignore
+RELEASE_NOTES.md
+CONTRIBUTING.md

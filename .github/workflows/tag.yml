@@ -1,0 +1,20 @@
+name: Publish softwarity/nestjs-amqp to NPM
+run-name: ${{ github.actor }} run build on ${{ github.repository }}
+on:
+  push:
+    tags:
+      - '*'
+jobs:
+  publish-nestjs-lib:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm publish
