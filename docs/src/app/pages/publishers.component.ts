@@ -13,17 +13,19 @@ import { CodeComponent } from '../code/code.component';
     </p>
 
     <table>
-      <thead><tr><th>Decorator</th><th>Destination</th><th>Methods</th></tr></thead>
+      <thead><tr><th>Decorator</th><th>Interface</th><th>Destination</th><th>Methods</th></tr></thead>
       <tbody>
         <tr>
           <td><code>&#64;AmqpQueue(addr)</code></td>
+          <td><code>AmqpQueue&lt;T&gt;</code></td>
           <td>Work-queue (classic / quorum)</td>
-          <td><code>send&lt;T&gt;()</code> + <code>emit()</code></td>
+          <td><code>send&lt;TRes&gt;(payload: T)</code> + <code>emit(payload: T)</code></td>
         </tr>
         <tr>
           <td><code>&#64;AmqpTopic(addr)</code></td>
+          <td><code>AmqpTopic&lt;T&gt;</code></td>
           <td>Topic (stream-backed broadcast)</td>
-          <td><code>emit()</code> only</td>
+          <td><code>emit(payload: T)</code> only</td>
         </tr>
       </tbody>
     </table>
@@ -35,7 +37,14 @@ import { CodeComponent } from '../code/code.component';
       destination.
     </p>
 
-    <h3>&#64;AmqpQueue — work-queue publisher</h3>
+    <h3>&#64;AmqpQueue&lt;T&gt; — work-queue publisher</h3>
+
+    <p>
+      The interface is <strong>generic on the payload type</strong> <code>T</code>. Declare the queue
+      with the event shape it carries and every <code>emit()</code> / <code>send()</code> call site is
+      type-checked. <code>T</code> defaults to <code>unknown</code>, so omitting the generic stays
+      valid for legacy code.
+    </p>
 
     <app-code lang="ts">import &#123; Injectable &#125; from '&#64;nestjs/common';
 import &#123; Observable &#125; from 'rxjs';
@@ -44,7 +53,7 @@ import &#123; AmqpQueue &#125; from '&#64;softwarity/nestjs-amqp';
 &#64;Injectable()
 export class OrdersService &#123;
   &#64;AmqpQueue('orders.create')
-  private readonly orders!: AmqpQueue;
+  private readonly orders!: AmqpQueue&lt;OrderBody&gt;;
 
   createOrder(body: OrderBody): Observable&lt;OrderConfirmation&gt; &#123;
     return this.orders.send&lt;OrderConfirmation&gt;(body, &#123;
@@ -55,25 +64,45 @@ export class OrdersService &#123;
   &#125;
 
   notifyCreated(body: OrderBody): void &#123;
-    this.orders.emit(body);   // fire-and-forget
+    this.orders.emit(body);                  // ✅ compiles
+    // this.orders.emit(&#123; foo: 'bar' &#125;);   // ❌ TS error: not assignable to OrderBody
   &#125;
 &#125;</app-code>
 
-    <h3>&#64;AmqpTopic — broadcast publisher</h3>
+    <p>
+      Note that <code>send()</code> carries a second generic parameter <code>TRes</code> for the reply
+      shape — supplied at the call site (it can vary per request even on the same queue).
+    </p>
+
+    <h3>&#64;AmqpTopic&lt;T&gt; — broadcast publisher</h3>
+
+    <p>Same generic convention — defaults to <code>unknown</code>.</p>
 
     <app-code lang="ts">import &#123; Injectable &#125; from '&#64;nestjs/common';
 import &#123; AmqpTopic &#125; from '&#64;softwarity/nestjs-amqp';
 
+interface BulletinChangedEvent &#123;
+  bulletinId: string;
+  when: string;
+&#125;
+
 &#64;Injectable()
 export class BulletinService &#123;
   &#64;AmqpTopic('changes.bulletin')
-  private readonly changes!: AmqpTopic;
+  private readonly changes!: AmqpTopic&lt;BulletinChangedEvent&gt;;
 
   notifyChange(bulletinId: string): void &#123;
-    this.changes.emit(&#123; bulletinId, when: new Date().toISOString() &#125;);
-    // this.changes.send(...)  &lt;-- TypeScript error: AmqpTopic has no send()
+    this.changes.emit(&#123; bulletinId, when: new Date().toISOString() &#125;);  // ✅
+    // this.changes.send(...)   ❌ TS error: AmqpTopic has no send()
   &#125;
 &#125;</app-code>
+
+    <div class="callout">
+      The generic is purely a <strong>compile-time</strong> contract. At runtime every payload goes
+      through the same JSON codec — <code>T</code> is erased. The cost is zero, the benefit is that
+      typos and schema drifts on the publisher side fail at <code>tsc</code> time instead of in
+      production logs.
+    </div>
 
     <h3>send() — request / reply</h3>
 

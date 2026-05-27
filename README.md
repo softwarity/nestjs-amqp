@@ -8,6 +8,16 @@
 
 📚 **Full documentation:** [softwarity.github.io/nestjs-amqp](https://softwarity.github.io/nestjs-amqp/)
 
+---
+
+> ## ⚠ Read this before your first deploy
+>
+> **This library does NOT create topology at runtime.** It opens senders and receivers on destinations that **must already exist** on the broker — queues, streams, exchanges, DLX bindings, the lot. Missing topology = silent failure (the AMQP link is rejected with `amqp:not-found`; the rest of the connection stays up and the app looks healthy).
+>
+> Declare everything broker-side via a definitions file or an IaC script. Full examples for **RabbitMQ 4.x** (`definitions.json` + docker-compose), **ActiveMQ Artemis** (`broker.xml`), **Azure Service Bus** (Azure CLI), and **Apache Qpid** are in [Broker topology](#broker-topology) below and on the [doc site](https://softwarity.github.io/nestjs-amqp/#/broker-topology).
+
+---
+
 ## Why?
 
 `@nestjs/microservices` only covers AMQP 0.9.1 (via `amqplib`). When you want **AMQP 1.0** features — long-lived sessions, link credit, source filters, message annotations, stream consumers — `rhea` is the canonical Node.js client. This library wraps rhea so the rest of your codebase only sees `@AmqpQueue`, `@Subscribe`, and Observables.
@@ -83,15 +93,16 @@ import {
 
 @Injectable()
 export class OrdersListener {
-  // Work-queue, default: 1 attempt, drop silently on error
+  // Work-queue, default: 1 attempt, drop silently on error.
+  // Single un-annotated arg → implicitly bound as @AmqpBody().
   @Subscribe('orders.created')
-  onCreated(@AmqpBody() order: OrderBody): void {
+  onCreated(order: OrderBody): void {
     this.svc.handle(order);
   }
 
   // Observable<T> with msg.reply_to -> auto-replies to the sender
   @Subscribe('queries.balance')
-  onBalance(@AmqpBody() q: BalanceQuery): Observable<BalanceResponse> {
+  onBalance(q: BalanceQuery): Observable<BalanceResponse> {
     return of({ amount: 42 });
   }
 
@@ -124,15 +135,20 @@ import { Injectable } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { AmqpQueue, AmqpTopic } from '@softwarity/nestjs-amqp';
 
+interface BulletinChangedEvent {
+  bulletinId: string;
+  when: string;
+}
+
 @Injectable()
 export class OrdersService {
-  // Work-queue handle - supports both send() and emit()
+  // Work-queue handle, generic on the payload type. Supports send() + emit().
   @AmqpQueue('orders.create')
-  private readonly orders!: AmqpQueue;
+  private readonly orders!: AmqpQueue<OrderBody>;
 
-  // Topic handle - only emit() (broadcast, no reply correlation)
+  // Topic handle, generic on the payload type. Only emit().
   @AmqpTopic('changes.bulletin')
-  private readonly changes!: AmqpTopic;
+  private readonly changes!: AmqpTopic<BulletinChangedEvent>;
 
   createOrder(body: OrderBody): Observable<OrderConfirmation> {
     return this.orders.send<OrderConfirmation>(body, {
@@ -144,10 +160,289 @@ export class OrdersService {
 
   notifyBulletinChanged(bulletinId: string): void {
     this.changes.emit({ bulletinId, when: new Date().toISOString() });
-    // this.changes.send(...) -> TypeScript error: AmqpTopic has no send()
+    // this.changes.emit({ foo: 'bar' });   ❌ TS error: not assignable to BulletinChangedEvent
+    // this.changes.send(...)               ❌ TS error: AmqpTopic has no send()
   }
 }
 ```
+
+## Broker topology
+
+> 🚨 **Topology must exist before the app starts.** This library never declares queues, streams, or exchanges at runtime, and never calls the broker Management API. Pre-declare everything broker-side. Below is what you need, then per-broker examples.
+
+### What you need to declare
+
+| For… | You need |
+|---|---|
+| Each `@Subscribe(addr)` | A **classic or quorum queue** at `addr`. Add `x-dead-letter-exchange` + `x-dead-letter-routing-key` if you set `dlq: true`. |
+| Each `@SubscribeTopic(addr)` (RabbitMQ) | A **stream queue** at `addr` with an appropriate `x-max-age`. |
+| Any use of `send()` (request/reply) | A **stream queue** at `replyStreamAddress` (default `<appName>.replies`). Short `x-max-age` (e.g. `5m`) is fine — replies are consumed almost immediately. |
+| Any consumer with `dlq: true` | A **DLX** (typically direct) + one or more **DLQs** (typically quorum) bound to it. |
+
+### RabbitMQ 4.x (recommended)
+
+Native AMQP 1.0 since 4.0, streams, quorum queues, v2 addressing on by default. Mount a `definitions.json` and let the broker do the work at boot. Topology becomes a normal git-tracked file.
+
+**`docker/rabbitmq/definitions.json`** — complete example for a service named `my-service` with three work-queues, one broadcast topic, the shared reply stream, and a catch-all DLQ:
+
+```json
+{
+  "rabbit_version": "4.0.0",
+
+  "users": [
+    {
+      "name": "my-service",
+      "password": "change-me",
+      "tags": ""
+    }
+  ],
+
+  "vhosts": [
+    { "name": "/" }
+  ],
+
+  "permissions": [
+    {
+      "user": "my-service",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+
+  "exchanges": [
+    {
+      "name": "my-service.dlx",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+
+  "queues": [
+    {
+      "name": "orders.created",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-dead-letter-exchange": "my-service.dlx",
+        "x-dead-letter-routing-key": "orders.created"
+      }
+    },
+    {
+      "name": "orders.shipped",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-dead-letter-exchange": "my-service.dlx",
+        "x-dead-letter-routing-key": "orders.shipped"
+      }
+    },
+    {
+      "name": "payments.process",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-dead-letter-exchange": "my-service.dlx",
+        "x-dead-letter-routing-key": "payments.process"
+      }
+    },
+
+    {
+      "name": "my-service.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+
+    {
+      "name": "my-service.replies",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "stream",
+        "x-max-age": "5m"
+      }
+    },
+
+    {
+      "name": "changes.bulletin",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "stream",
+        "x-max-age": "1h"
+      }
+    }
+  ],
+
+  "bindings": [
+    {
+      "source": "my-service.dlx",
+      "vhost": "/",
+      "destination": "my-service.dlq",
+      "destination_type": "queue",
+      "routing_key": "orders.created",
+      "arguments": {}
+    },
+    {
+      "source": "my-service.dlx",
+      "vhost": "/",
+      "destination": "my-service.dlq",
+      "destination_type": "queue",
+      "routing_key": "orders.shipped",
+      "arguments": {}
+    },
+    {
+      "source": "my-service.dlx",
+      "vhost": "/",
+      "destination": "my-service.dlq",
+      "destination_type": "queue",
+      "routing_key": "payments.process",
+      "arguments": {}
+    }
+  ]
+}
+```
+
+**`docker/rabbitmq/rabbitmq.conf`**:
+
+```
+management.load_definitions = /etc/rabbitmq/definitions.json
+consumer_timeout = 1800000   # 30 min — keep > DLQ-browser hard TTL (25 min)
+```
+
+**`docker-compose.yml`**:
+
+```yaml
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - "5672:5672"     # AMQP 1.0
+      - "15672:15672"   # Management UI
+    volumes:
+      - ./docker/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - rabbitmq-data:/var/lib/rabbitmq
+volumes:
+  rabbitmq-data:
+```
+
+> ⚠ **Destructive changes**: queue types are immutable. Changing classic → quorum → stream requires deleting the queue first (Management UI / API) before re-importing the definitions. In dev: `docker compose down -v && docker compose up -d`.
+
+### Apache ActiveMQ Artemis
+
+Artemis speaks AMQP 1.0 natively on port 5672. Topology lives in `broker.xml`. **Use `autoPrefixQueues: false`** — Artemis uses bare names.
+
+```xml
+<configuration>
+  <core>
+    <addresses>
+      <address name="orders.created">
+        <anycast>
+          <queue name="orders.created"><durable>true</durable></queue>
+        </anycast>
+      </address>
+
+      <address name="my-service.dlq">
+        <anycast>
+          <queue name="my-service.dlq"><durable>true</durable></queue>
+        </anycast>
+      </address>
+
+      <!-- Broadcast (multicast = pub/sub) -->
+      <address name="changes.bulletin">
+        <multicast/>
+      </address>
+    </addresses>
+
+    <address-settings>
+      <address-setting match="orders.#">
+        <dead-letter-address>my-service.dlq</dead-letter-address>
+        <max-delivery-attempts>5</max-delivery-attempts>
+      </address-setting>
+    </address-settings>
+  </core>
+</configuration>
+```
+
+**Key differences from RabbitMQ:**
+
+- **No streams.** Broadcast uses `multicast` addresses — each receiver gets its own auto-deleted subscription queue on attach.
+- **Reply queue**: a regular durable (anycast) queue instead of a stream. Correlation works the same way, but only one instance receives each reply. For multi-instance services, declare one reply queue per instance or use a multicast address.
+- **DLQ semantics**: Artemis tracks attempts via `max-delivery-attempts` on the address-setting. Coordinate with the library's `maxDelivery` (set Artemis higher so the library's policy wins).
+
+### Azure Service Bus
+
+Fully AMQP 1.0 native. **Use `autoPrefixQueues: false`**. Connection URL: `amqps://<namespace>.servicebus.windows.net:5671`. Auth via SAS token or AAD.
+
+```bash
+RG=my-rg
+NS=my-namespace
+LOC=westeurope
+
+az group create --name $RG --location $LOC
+
+az servicebus namespace create --name $NS --resource-group $RG \
+  --location $LOC --sku Standard   # Standard required for topics
+
+# Work queues (each gets an automatic $DeadLetterQueue sub-queue)
+az servicebus queue create --resource-group $RG --namespace-name $NS \
+  --name orders.created --max-delivery-count 5
+az servicebus queue create --resource-group $RG --namespace-name $NS \
+  --name payments.process --max-delivery-count 5
+
+# Reply queue (anycast, one per consumer instance)
+az servicebus queue create --resource-group $RG --namespace-name $NS \
+  --name my-service.replies --default-message-time-to-live PT5M
+
+# Broadcast: topic + one subscription per consumer instance
+az servicebus topic create --resource-group $RG --namespace-name $NS \
+  --name changes.bulletin
+az servicebus topic subscription create --resource-group $RG \
+  --namespace-name $NS --topic-name changes.bulletin --name my-service-inst-1
+```
+
+**Key differences:**
+
+- **Built-in dead-letter** — every queue/subscription gets a `$DeadLetterQueue` sub-queue at `<queue>/$DeadLetterQueue`. No DLX/binding declaration needed.
+- **No streams** — use a regular queue for replies, topics+subscriptions for broadcast.
+- **Subscription address** for `@SubscribeTopic`: `<topic>/Subscriptions/<sub-name>`.
+- **SKU matters** — topics require Standard or Premium.
+
+### Apache Qpid Broker-J
+
+AMQP 1.0 native. Topology in `config.json` (or the web console at port 8080). Supports queues + exchanges similar to RabbitMQ classic queues — **no streams**. Use `autoPrefixQueues: false`.
+
+Good fit for pure work-queue workloads. For `@SubscribeTopic`-style broadcast or stream-backed reply correlation, fall back to per-instance queues + topic-exchange bindings, or use RabbitMQ where stream semantics matter.
+
+### Verification at boot — optional
+
+This library doesn't ping the Management API. If you want a sanity check that the broker is in the expected state, do it in an `OnApplicationBootstrap` hook of your own:
+
+- **RabbitMQ** — `GET /api/queues/%2F/<queue>` on the Management API.
+- **Azure SB** — `@azure/service-bus-management` SDK (`queueExists()`, `topicExists()`).
+- **Artemis** — JMX / Jolokia REST endpoint.
+
+Production deployments should fail loudly at infra provisioning time (Terraform plan, Helm upgrade, definitions import), not silently at app startup.
+
+---
 
 ## Configuration reference
 
@@ -172,25 +467,46 @@ export class OrdersService {
 
 Property decorators. First access resolves the publisher singleton; subsequent accesses reuse a memoised handle. Throws if accessed before the AMQP module has finished `OnModuleInit` (typically only an issue in service constructors — defer to methods or `OnApplicationBootstrap`).
 
-### `@AmqpQueue(address)` → `AmqpQueue`
+Both interfaces are **generic on the payload type** `T` (defaults to `unknown`). Declare the queue or topic with its event shape and every `emit()` / `send()` call site is type-checked at compile time. The generic is purely a compile-time contract — at runtime every payload reaches the JSON codec the same way.
+
+### `@AmqpQueue(address)` → `AmqpQueue<T>`
 
 For **work-queues**. Exposes both `send()` and `emit()`.
 
 ```ts
-interface AmqpQueue {
-  send<TRes>(payload: unknown, options?: SendOptions): Observable<TRes>;
-  emit(payload: unknown, options?: EmitOptions): void;
+interface AmqpQueue<T = unknown> {
+  send<TRes>(payload: T, options?: SendOptions): Observable<TRes>;
+  emit(payload: T, options?: EmitOptions): void;
 }
 ```
 
-### `@AmqpTopic(address)` → `AmqpTopic`
+```ts
+@AmqpQueue('orders.create')
+private readonly orders!: AmqpQueue<OrderBody>;
+
+this.orders.emit(body);                 // ✅ checked against OrderBody
+this.orders.send<Confirmation>(body);   // ✅ payload typed; TRes per call
+// this.orders.emit({ foo: 'bar' });    ❌ TS error
+```
+
+The second generic `TRes` on `send()` is supplied per call site — different requests on the same queue can return different reply shapes.
+
+### `@AmqpTopic(address)` → `AmqpTopic<T>`
 
 For **topics** (stream-backed broadcast). Only `emit()` — calling `send()` is a compile-time TypeScript error.
 
 ```ts
-interface AmqpTopic {
-  emit(payload: unknown, options?: EmitOptions): void;
+interface AmqpTopic<T = unknown> {
+  emit(payload: T, options?: EmitOptions): void;
 }
+```
+
+```ts
+@AmqpTopic('changes.bulletin')
+private readonly changes!: AmqpTopic<BulletinChangedEvent>;
+
+this.changes.emit({ bulletinId, when });   // ✅
+// this.changes.send(...);                  ❌ TS error: AmqpTopic has no send()
 ```
 
 ### `SendOptions` / `EmitOptions`
@@ -203,7 +519,32 @@ interface AmqpTopic {
 
 ## Consumer decorators — `@Subscribe` & `@SubscribeTopic`
 
-Both walk every provider via `DiscoveryService` + `MetadataScanner` at module-init, find decorated methods, validate every parameter is annotated with an `@Amqp*()` decorator (throws at boot otherwise), open a receiver per handler, and dispatch.
+Both walk every provider via `DiscoveryService` + `MetadataScanner` at module-init, find decorated methods, validate every parameter (with the implicit-body rule, see below), open a receiver per handler, and dispatch.
+
+### Implicit-body rule
+
+To keep the dominant case ergonomic, exactly **one un-annotated parameter is allowed** per handler — it is bound as if you had written `@AmqpBody()`. The rule:
+
+| Situation | Behaviour |
+|---|---|
+| All parameters annotated | Pass through — used as declared. |
+| Exactly 1 un-annotated parameter | Treated as `@AmqpBody()` implicitly. |
+| 2+ un-annotated parameters | **Throws at boot** — ambiguous (which one is the body?). |
+| 1 un-annotated + an explicit `@AmqpBody()` elsewhere | **Throws at boot** — mixed styles refused. Pick one. |
+
+Both styles are valid and equivalent:
+
+```ts
+// Implicit
+@Subscribe('orders.created')
+onCreated(order: OrderBody): void { this.svc.handle(order); }
+
+// Explicit
+@Subscribe('orders.created')
+onCreated(@AmqpBody() order: OrderBody): void { this.svc.handle(order); }
+```
+
+The validation runs at module init and throws with a precise diagnostic — never silently at runtime.
 
 ### `@Subscribe(address, options?)` — work-queue consumer
 

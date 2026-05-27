@@ -68,21 +68,44 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Read the per-parameter `@Amqp*()` metadata. Throw if any declared
-   * parameter is un-annotated — handlers must be explicit, no implicit
-   * positional binding.
+   * Read the per-parameter `@Amqp*()` metadata, applying the implicit-body
+   * convention: exactly **one** un-annotated parameter is allowed and is
+   * bound to the decoded message body (the dominant case). The rule fails
+   * fast at boot — never silently at runtime:
+   *
+   *   - 0 un-annotated → all explicit, pass through.
+   *   - 1 un-annotated → synthesise `{ kind: 'BODY' }` for that slot,
+   *     **unless** an explicit `@AmqpBody()` already exists elsewhere on
+   *     the method (mixing styles is confusing — refuse and ask the
+   *     developer to pick one).
+   *   - 2+ un-annotated → ambiguous (which one is the body?), throw.
    */
   private readAndValidateParams(prototype: object, methodName: string, ctor: string, arity: number): AmqpParamMeta[] {
     const params = (Reflect.getMetadata(AMQP_PARAMS_METADATA, prototype, methodName) ?? []) as AmqpParamMeta[];
+    const unannotated: number[] = [];
     for (let i = 0; i < arity; i++) {
-      if (!params[i]) {
-        throw new Error(
-          `@Subscribe handler ${ctor}.${methodName} has an un-annotated parameter at index ${i}. ` +
-            `Use @AmqpBody() / @AmqpContext() / @AmqpSettler() / @AmqpDeliveryCount() / etc.`,
-        );
-      }
+      if (!params[i]) unannotated.push(i);
     }
-    return params;
+    if (unannotated.length === 0) return params;
+    if (unannotated.length > 1) {
+      throw new Error(
+        `@Subscribe handler ${ctor}.${methodName} has ${unannotated.length} un-annotated parameters ` +
+          `(indices ${unannotated.join(', ')}). At most one is allowed - it is bound as @AmqpBody(). ` +
+          `Annotate the others with @AmqpContext() / @AmqpSettler() / @AmqpDeliveryCount() / @AmqpProperties() / etc.`,
+      );
+    }
+    if (params.some((p) => p?.kind === 'BODY')) {
+      throw new Error(
+        `@Subscribe handler ${ctor}.${methodName} mixes an explicit @AmqpBody() with an un-annotated ` +
+          `parameter at index ${unannotated[0]}. Pick one style: either annotate every parameter, or omit ` +
+          `@AmqpBody() and let the single un-annotated parameter receive the body.`,
+      );
+    }
+    // Clone the sparse array - we don't want to mutate the cached reflect
+    // metadata, only the local view used to bind this handler's arguments.
+    const result = [...params];
+    result[unannotated[0]!] = { kind: 'BODY' };
+    return result;
   }
 
   private dispatch(

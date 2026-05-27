@@ -10,23 +10,32 @@ import type { EmitOptions, SendOptions } from './amqp.types';
 /** Publish handle for a **work-queue** (classic/quorum). Supports both
  *  `send()` (request/reply, waits for the reply on the shared reply stream)
  *  and `emit()` (fire-and-forget). Use for point-to-point messaging where
- *  one message is processed by exactly one consumer. */
-export interface AmqpQueue {
+ *  one message is processed by exactly one consumer.
+ *
+ *  Generic on the payload type `T` — declare the queue with the event shape
+ *  it carries (`AmqpQueue<MyEvent>`) and `emit()` / `send()` are type-checked
+ *  at every call site. Defaults to `unknown` so legacy declarations without
+ *  a generic argument keep compiling. */
+export interface AmqpQueue<T = unknown> {
   /** Request/reply. Returns an Observable that emits the peer's reply and
    *  completes. Errors with `AmqpTimeoutError` after `timeoutMs` (default
-   *  configured via `defaultSendTimeoutMs`). */
-  send<TRes>(payload: unknown, options?: SendOptions): Observable<TRes>;
+   *  configured via `defaultSendTimeoutMs`). `TRes` is supplied at the call
+   *  site — the queue's static `T` only constrains the request payload. */
+  send<TRes>(payload: T, options?: SendOptions): Observable<TRes>;
   /** Fire-and-forget. Returns `void` synchronously. */
-  emit(payload: unknown, options?: EmitOptions): void;
+  emit(payload: T, options?: EmitOptions): void;
 }
 
 /** Publish handle for a **topic** (stream-backed broadcast). Only exposes
  *  `emit()` — request/reply (`send()`) is intentionally excluded because
- *  broadcast semantics don't fit a single-reply correlation model. */
-export interface AmqpTopic {
+ *  broadcast semantics don't fit a single-reply correlation model.
+ *
+ *  Generic on the payload type `T` — same convention as {@link AmqpQueue},
+ *  default `unknown` to preserve legacy declarations. */
+export interface AmqpTopic<T = unknown> {
   /** Fire-and-forget broadcast. All connected `@SubscribeTopic` consumers
    *  on this address receive the message. Returns `void` synchronously. */
-  emit(payload: unknown, options?: EmitOptions): void;
+  emit(payload: T, options?: EmitOptions): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -43,7 +52,11 @@ export function setAmqpPublisher(publisher: AmqpPublisher): void {
   publisherRef = publisher;
 }
 
-class BoundAmqpQueue implements AmqpQueue {
+// The bound impls stay non-parametric — the generic `T` is purely a
+// compile-time contract carried by the public interface. At runtime every
+// payload reaches `JSON.stringify` the same way regardless of its declared
+// shape, so erasing `T` here costs nothing and keeps the impl small.
+class BoundAmqpQueue implements AmqpQueue<unknown> {
   constructor(
     private readonly publisher: AmqpPublisher,
     private readonly address: string,
@@ -58,7 +71,7 @@ class BoundAmqpQueue implements AmqpQueue {
   }
 }
 
-class BoundAmqpTopic implements AmqpTopic {
+class BoundAmqpTopic implements AmqpTopic<unknown> {
   constructor(
     private readonly publisher: AmqpPublisher,
     private readonly address: string,
@@ -94,7 +107,7 @@ function resolvePublisher(decoratorName: string, address: string): AmqpPublisher
  * Usage:
  * ```ts
  * @AmqpQueue('orders.create')
- * private readonly orders!: AmqpQueue;
+ * private readonly orders!: AmqpQueue<OrderBody>;
  *
  * createOrder(body: OrderBody): Observable<OrderConfirmation> {
  *   return this.orders.send<OrderConfirmation>(body, { timeoutMs: 5000 });
@@ -108,7 +121,7 @@ export function AmqpQueue(address: string): PropertyDecorator {
     Object.defineProperty(target, propertyKey, {
       configurable: true,
       enumerable: true,
-      get(this: object): AmqpQueue {
+      get(this: object): AmqpQueue<unknown> {
         const handle = new BoundAmqpQueue(resolvePublisher('AmqpQueue', address), address);
         Object.defineProperty(this, propertyKey, {
           value: handle,
@@ -130,10 +143,10 @@ export function AmqpQueue(address: string): PropertyDecorator {
  * Usage:
  * ```ts
  * @AmqpTopic('changes.bulletin')
- * private readonly changes!: AmqpTopic;
+ * private readonly changes!: AmqpTopic<BulletinChangedEvent>;
  *
- * notifyChange(id: string): void {
- *   this.changes.emit({ id, when: new Date().toISOString() });
+ * notifyChange(event: BulletinChangedEvent): void {
+ *   this.changes.emit(event);
  * }
  * ```
  *
@@ -144,7 +157,7 @@ export function AmqpTopic(address: string): PropertyDecorator {
     Object.defineProperty(target, propertyKey, {
       configurable: true,
       enumerable: true,
-      get(this: object): AmqpTopic {
+      get(this: object): AmqpTopic<unknown> {
         const handle = new BoundAmqpTopic(resolvePublisher('AmqpTopic', address), address);
         Object.defineProperty(this, propertyKey, {
           value: handle,

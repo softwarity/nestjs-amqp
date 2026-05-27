@@ -1,9 +1,10 @@
 import { Component } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { CodeComponent } from '../code/code.component';
 
 @Component({
   selector: 'app-getting-started',
-  imports: [CodeComponent],
+  imports: [CodeComponent, RouterLink],
   template: `
     <h2>Getting started</h2>
 
@@ -64,27 +65,30 @@ import &#123; AmqpQueue &#125; from '&#64;softwarity/nestjs-amqp';
 
 &#64;Injectable()
 export class OrdersService &#123;
+  // Generic on the payload type: emit/send are checked at every call site.
   &#64;AmqpQueue('orders.create')
-  private readonly orders!: AmqpQueue;
+  private readonly orders!: AmqpQueue&lt;OrderBody&gt;;
 
   create(body: OrderBody): void &#123;
-    this.orders.emit(body);                       // fire-and-forget
+    this.orders.emit(body);                        // fire-and-forget
   &#125;
 
   confirm(body: OrderBody): Observable&lt;Confirmation&gt; &#123;
-    return this.orders.send&lt;Confirmation&gt;(body); // request/reply
+    return this.orders.send&lt;Confirmation&gt;(body);  // request/reply
   &#125;
 &#125;</app-code>
 
     <h3>Consume</h3>
 
     <app-code lang="ts">import &#123; Injectable &#125; from '&#64;nestjs/common';
-import &#123; Subscribe, AmqpBody &#125; from '&#64;softwarity/nestjs-amqp';
+import &#123; Subscribe &#125; from '&#64;softwarity/nestjs-amqp';
 
 &#64;Injectable()
 export class OrdersListener &#123;
+  // Single argument with no decorator -> implicitly bound to the
+  // JSON-decoded message body. Use &#64;AmqpBody() if you prefer explicit.
   &#64;Subscribe('orders.create')
-  onCreate(&#64;AmqpBody() order: OrderBody): void &#123;
+  onCreate(order: OrderBody): void &#123;
     this.svc.handle(order);
   &#125;
 &#125;</app-code>
@@ -95,23 +99,34 @@ export class OrdersListener &#123;
       <strong>DLQ browser</strong>, and <strong>Errors &amp; lifecycle</strong>.
     </div>
 
-    <h3>RabbitMQ topology — pre-declared, not created at runtime</h3>
-    <p>
-      This library never calls the broker Management API. Queues, streams, exchanges, and DLX bindings live
-      in your broker definitions (typically a mounted <code>definitions.json</code> for RabbitMQ). The app
-      boots, connects, opens senders and receivers — nothing else.
-    </p>
+    <h3>Topology must exist before the app starts</h3>
+
+    <div class="callout danger">
+      <strong>⚠ Read this before your first deploy.</strong> This library opens senders and receivers on
+      destinations that <em>must already exist</em> on the broker. It does NOT create queues, streams, or
+      exchanges at runtime — and never calls the broker Management API. Missing topology = silent
+      failure (the AMQP link is rejected with <code>amqp:not-found</code>; the rest of the connection
+      stays up). Declare everything broker-side via a definitions file or an IaC script.
+    </div>
+
     <p>
       Minimum recommended topology for full feature use:
     </p>
     <ul>
-      <li>Quorum or classic queues for each <code>&#64;Subscribe</code> address, with a DLX if you set
-        <code>dlq: true</code>.</li>
-      <li>A <strong>stream queue</strong> for the shared reply destination (<code>&#64;Subscribe</code> /
-        <code>&#64;SubscribeTopic</code> defaults: <code>&lt;appName&gt;.replies</code>).</li>
-      <li>One or more stream queues for <code>&#64;SubscribeTopic</code> broadcast addresses.</li>
-      <li>One catch-all DLQ (typically quorum) referenced by the DLX.</li>
+      <li>Quorum or classic queues for each <code>&#64;Subscribe</code> address, with a DLX + DLQ
+        binding if you set <code>dlq: true</code>.</li>
+      <li>A <strong>stream queue</strong> for the shared reply destination (default
+        <code>&lt;appName&gt;.replies</code>) — required as soon as you call <code>send()</code>.</li>
+      <li>One <strong>stream queue</strong> per <code>&#64;SubscribeTopic</code> broadcast address.</li>
+      <li>One catch-all DLQ (typically quorum) bound to the DLX.</li>
     </ul>
+
+    <p>
+      Full topology examples for <strong>RabbitMQ 4.x</strong> (definitions.json + docker-compose),
+      <strong>ActiveMQ Artemis</strong> (broker.xml), <strong>Azure Service Bus</strong> (Azure CLI),
+      and <strong>Apache Qpid</strong> live on the
+      <a routerLink="/broker-topology">Broker topology</a> page.
+    </p>
   `,
 })
 export class GettingStartedComponent {}

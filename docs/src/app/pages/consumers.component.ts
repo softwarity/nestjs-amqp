@@ -160,18 +160,69 @@ onPayment(
       <strong>immediate DLQ regardless</strong> of remaining attempts.
     </p>
 
-    <h3>Boot-time validation</h3>
+    <h3>Boot-time validation — the implicit-body rule</h3>
 
     <p>
-      Every parameter of every <code>&#64;Subscribe</code> handler must be annotated with one of the
-      <code>&#64;Amqp*()</code> parameter decorators. Un-annotated parameters throw at boot:
+      To keep the dominant case (one body argument) ergonomic, exactly <strong>one un-annotated
+      parameter is allowed</strong> per handler and is bound as if you had written
+      <code>&#64;AmqpBody()</code>. Anything else throws at boot — never silently at runtime.
+      The rule:
     </p>
 
-    <app-code lang="text">Error: &#64;Subscribe handler OrdersListener.onCreated has an un-annotated parameter
-at index 0. Use &#64;AmqpBody() / &#64;AmqpContext() / &#64;AmqpSettler() /
-&#64;AmqpDeliveryCount() / etc.</app-code>
+    <table>
+      <thead><tr><th>Situation</th><th>Behaviour</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>All parameters annotated</td>
+          <td>Pass through — used as declared.</td>
+        </tr>
+        <tr>
+          <td>Exactly 1 un-annotated parameter</td>
+          <td>Treated as <code>&#64;AmqpBody()</code> implicitly.</td>
+        </tr>
+        <tr>
+          <td>2+ un-annotated parameters</td>
+          <td><strong>Throws</strong> — ambiguous (which one is the body?).</td>
+        </tr>
+        <tr>
+          <td>1 un-annotated + an explicit <code>&#64;AmqpBody()</code> elsewhere</td>
+          <td><strong>Throws</strong> — mixed styles refused. Pick one.</td>
+        </tr>
+      </tbody>
+    </table>
 
-    <p>This is intentional: handlers are explicit, no implicit positional binding.</p>
+    <p>Concretely, both of these are valid and equivalent:</p>
+
+    <app-code lang="ts">// Implicit — the single argument is bound as the body
+&#64;Subscribe('orders.created')
+onCreated(order: OrderBody): void &#123;
+  this.svc.handle(order);
+&#125;
+
+// Explicit — same effect, more verbose
+&#64;Subscribe('orders.created')
+onCreated(&#64;AmqpBody() order: OrderBody): void &#123;
+  this.svc.handle(order);
+&#125;</app-code>
+
+    <p>And these throw at boot:</p>
+
+    <app-code lang="text">// 2 un-annotated → ambiguous
+&#64;Subscribe('orders.created')
+onCreated(order: OrderBody, count: number): void &#123; ... &#125;
+// Error: &#64;Subscribe handler OrdersListener.onCreated has 2 un-annotated
+//        parameters (indices 0, 1). At most one is allowed - it is bound
+//        as &#64;AmqpBody(). Annotate the others with &#64;AmqpContext() /
+//        &#64;AmqpSettler() / &#64;AmqpDeliveryCount() / etc.
+
+// Mixed styles
+&#64;Subscribe('orders.created')
+onCreated(extra: string, &#64;AmqpBody() order: OrderBody): void &#123; ... &#125;
+// Error: &#64;Subscribe handler OrdersListener.onCreated mixes an explicit
+//        &#64;AmqpBody() with an un-annotated parameter at index 0.
+//        Pick one style: either annotate every parameter, or omit
+//        &#64;AmqpBody() and let the single un-annotated parameter
+//        receive the body.</app-code>
   `,
 })
 export class ConsumersComponent {}

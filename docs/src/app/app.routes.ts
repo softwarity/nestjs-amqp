@@ -11,6 +11,10 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/configuration.component').then((m) => m.ConfigurationComponent),
   },
   {
+    path: 'broker-topology',
+    loadComponent: () => import('./pages/broker-topology.component').then((m) => m.BrokerTopologyComponent),
+  },
+  {
     path: 'publishers',
     loadComponent: () => import('./pages/publishers.component').then((m) => m.PublishersComponent),
   },

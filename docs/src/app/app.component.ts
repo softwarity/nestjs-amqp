@@ -19,6 +19,7 @@ export class AppComponent {
   protected readonly links: DocLink[] = [
     { path: '/', label: 'Getting started', icon: 'rocket_launch' },
     { path: '/configuration', label: 'Configuration', icon: 'settings' },
+    { path: '/broker-topology', label: 'Broker topology', icon: 'lan' },
     { path: '/publishers', label: 'Publishers', icon: 'send' },
     { path: '/consumers', label: 'Consumers', icon: 'inbox' },
     { path: '/parameter-decorators', label: 'Parameter decorators', icon: 'tune' },

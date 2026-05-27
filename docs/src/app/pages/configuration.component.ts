@@ -1,9 +1,10 @@
 import { Component } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { CodeComponent } from '../code/code.component';
 
 @Component({
   selector: 'app-configuration',
-  imports: [CodeComponent],
+  imports: [CodeComponent, RouterLink],
   template: `
     <h2>Configuration</h2>
 
@@ -127,11 +128,13 @@ AmqpModule.forRootAsync(&#123;
       is the recommended way to work offline (PR review, unit tests, local dev without docker).
     </p>
 
-    <div class="callout warn">
-      <strong>Stream pre-declaration is mandatory.</strong> The shared reply stream and any
-      <code>&#64;SubscribeTopic</code> address must exist on the broker before the app starts —
-      typically via a <code>definitions.json</code> mounted on RabbitMQ. The library does not call the
-      Management API.
+    <div class="callout danger">
+      <strong>⚠ Pre-declaration of every destination is mandatory.</strong> The shared reply stream,
+      every <code>&#64;Subscribe</code> queue, every <code>&#64;SubscribeTopic</code> stream, the DLX
+      and the DLQ all must exist on the broker before the app starts. The library does not call any
+      Management API — missing topology = <code>amqp:not-found</code> at link-open time and silent
+      failures. See the <a routerLink="/broker-topology">Broker topology</a> page for full examples
+      (RabbitMQ 4.x, Artemis, Azure SB, Qpid).
     </div>
   `,
 })
