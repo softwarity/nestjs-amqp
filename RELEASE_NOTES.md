@@ -1,6 +1,38 @@
 # Release Notes
 
-## 0.3.4
+## 0.3.4 — Topology manifest refinements
+
+Follow-up to the 0.3.3 manifest feature, fixing three sharp edges spotted on the first real-world usage.
+
+### Changes
+
+- **Azure Service Bus support dropped.** No local image to test against in CI, so the dedicated generator and brand were unmaintainable. `BrokerBrand` narrowed to `'rabbitmq' | 'artemis' | 'qpid' | 'unknown'`; a peer that announces itself as Azure now falls back to the generic text generator. `ALL_KNOWN_BRANDS` shrunk from 4 to 3 — only `<broker>.rabbitmq.json`, `<broker>.artemis.xml`, `<broker>.qpid.json` are written when `emitTopologyManifest: true`.
+
+- **DLX wiring is now defensive.** When the broker has a `defaultDlqAddress`, the manifest wires DLX on **every** consumer queue (not just those whose `@Consume` has `dlq: true`). Queue arguments are immutable on most brokers — pre-wiring DLX avoids a broker-side recreate when the application later flips `dlq: true` at the call site. The matching bindings follow.
+
+- **JSON outputs are strictly valid.** The `//` comment header in `rabbitmq.json` and `qpid.json` is gone, replaced by a `_meta` JSON block at the top of the document:
+  ```json
+  {
+    "_meta": {
+      "generated_by": "@softwarity/nestjs-amqp",
+      "broker_name": "default",
+      "target_brand": "rabbitmq",
+      "note": "Topology snippet — merge with your existing broker config..."
+    },
+    "exchanges": [...],
+    "queues": [...],
+    "bindings": [...]
+  }
+  ```
+  The files are now importable as-is by RabbitMQ's `management.load_definitions` (unknown root keys are ignored) and `jq`-parseable for tooling. The Artemis XML output keeps its `<!-- -->` header (valid XML). The Qpid `_meta` carries an extra `streams_warning` field listing any `@Subscribe` addresses (Qpid Broker-J has no native stream type).
+
+### Internal changes
+
+- `AzureServiceBusGenerator` deleted; `ALL_KNOWN_BRANDS` shrunk to 3 entries.
+- Brand detection in `BrokerConnection.detectBrand` no longer recognises Azure SB product strings.
+- `topology-manifest.spec.ts` revised: Azure describe block removed, new tests for defensive DLX, `_meta` block presence, strict JSON validity.
+- `package.json` keywords: `azure-service-bus` removed.
+- Doc pages: Azure SB sections + references removed from `broker-topology`, `getting-started`, `configuration`, `publishers`, `request-reply`, `retry-and-dlq`. README and `app.component.html` updated to drop Azure SB from the broker list.
 
 ---
 

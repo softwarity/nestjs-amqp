@@ -62,7 +62,7 @@ import { CodeComponent } from '../code/code.component';
     <p>
       Short <code>x-max-age</code> (5 minutes) is fine — replies are consumed almost immediately, and
       anything older than the longest sensible <code>timeoutMs</code> is dead weight. On Artemis use a
-      regular anycast durable queue; on Azure Service Bus a regular queue. See
+      regular anycast durable queue. See
       <a routerLink="/broker-topology">Broker topology</a> for the variants.
     </p>
 

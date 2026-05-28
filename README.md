@@ -3,8 +3,11 @@
 [![npm version](https://img.shields.io/npm/v/@softwarity/nestjs-amqp.svg)](https://www.npmjs.com/package/@softwarity/nestjs-amqp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node](https://img.shields.io/node/v/@softwarity/nestjs-amqp.svg)](https://nodejs.org)
+[![Unit tests](https://github.com/softwarity/nestjs-amqp/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/unit-tests.yml)
+[![RabbitMQ](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-rabbitmq.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-rabbitmq.yml)
+[![Artemis](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-artemis.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-artemis.yml)
 
-**AMQP 1.0 integration for NestJS, powered by [rhea](https://github.com/amqp/rhea).** A thin, RxJS-friendly wrapper that exposes decorator-based publishers and consumers — designed for RabbitMQ 4.x (native AMQP 1.0), Apache ActiveMQ Artemis, Apache Qpid, and Azure Service Bus.
+**AMQP 1.0 integration for NestJS, powered by [rhea](https://github.com/amqp/rhea).** A thin, RxJS-friendly wrapper that exposes decorator-based publishers and consumers — designed for RabbitMQ 4.x (native AMQP 1.0), Apache ActiveMQ Artemis, and Apache Qpid.
 
 📚 **Full documentation:** [softwarity.github.io/nestjs-amqp](https://softwarity.github.io/nestjs-amqp/)
 
@@ -14,7 +17,7 @@
 >
 > **This library does NOT create topology at runtime.** It opens senders and receivers on destinations that **must already exist** on the broker — queues, streams, exchanges, DLX bindings, the lot. Missing topology = silent failure (the AMQP link is rejected with `amqp:not-found`; the rest of the connection stays up and the app looks healthy).
 >
-> Declare everything broker-side via a definitions file or an IaC script. Full examples for **RabbitMQ 4.x** (`definitions.json` + docker-compose), **ActiveMQ Artemis** (`broker.xml`), **Azure Service Bus** (Azure CLI), and **Apache Qpid** live on the [doc site](https://softwarity.github.io/nestjs-amqp/#/broker-topology).
+> Declare everything broker-side via a definitions file or an IaC script. Full examples for **RabbitMQ 4.x** (`definitions.json` + docker-compose), **ActiveMQ Artemis** (`broker.xml`), and **Apache Qpid** live on the [doc site](https://softwarity.github.io/nestjs-amqp/#/broker-topology).
 
 ---
 

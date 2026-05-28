@@ -327,68 +327,6 @@ volumes:
         the library's retry policy wins.</li>
     </ul>
 
-    <h2>Azure Service Bus</h2>
-
-    <p>
-      Azure SB is fully AMQP 1.0 native — the library connects with no transport changes. Entities
-      (queues, topics, subscriptions, sub-queues) are declared via ARM/Bicep, Azure CLI, or the Portal.
-    </p>
-
-    <p>The connection URL looks like:</p>
-
-    <app-code lang="text">amqps://&lt;namespace&gt;.servicebus.windows.net:5671</app-code>
-
-    <p>
-      Auth is SASL (use a SAS token or AAD token as <code>password</code> with
-      <code>username = "$@$@"</code> for SAS, or AAD bearer for OAuth).
-    </p>
-
-    <h3>Azure CLI — declare the topology</h3>
-
-    <app-code lang="bash">RG=my-rg
-NS=my-namespace
-LOC=westeurope
-
-az group create --name $RG --location $LOC
-
-az servicebus namespace create \\
-  --name $NS \\
-  --resource-group $RG \\
-  --location $LOC \\
-  --sku Standard       # Standard required for topics
-
-# Work queues (each gets an automatic $DeadLetterQueue sub-queue)
-az servicebus queue create --resource-group $RG --namespace-name $NS \\
-  --name orders.created --max-delivery-count 5
-az servicebus queue create --resource-group $RG --namespace-name $NS \\
-  --name orders.shipped --max-delivery-count 5
-az servicebus queue create --resource-group $RG --namespace-name $NS \\
-  --name payments.process --max-delivery-count 5
-
-# Reply queue (anycast, one per consumer instance — see note below)
-az servicebus queue create --resource-group $RG --namespace-name $NS \\
-  --name my-service.replies --default-message-time-to-live PT5M
-
-# Broadcast topic + one subscription per consumer instance
-az servicebus topic create --resource-group $RG --namespace-name $NS \\
-  --name changes.bulletin
-az servicebus topic subscription create --resource-group $RG \\
-  --namespace-name $NS --topic-name changes.bulletin \\
-  --name my-service-instance-1</app-code>
-
-    <h3>Key differences</h3>
-
-    <ul>
-      <li><strong>Dead-letter is built-in.</strong> Every queue and subscription has an automatic
-        <code>$DeadLetterQueue</code> sub-queue at <code>&lt;queue&gt;/$DeadLetterQueue</code>. No
-        DLX/binding declaration needed. Browse it the same way as a regular queue.</li>
-      <li><strong>No streams.</strong> Use a regular queue for the reply destination. For broadcast,
-        use topics + per-instance subscriptions.</li>
-      <li><strong>Topic subscriptions are addressable.</strong> The address to subscribe is
-        <code>&lt;topic&gt;/Subscriptions/&lt;sub-name&gt;</code>.</li>
-      <li><strong>SKU matters.</strong> Topics require the Standard tier (or Premium).</li>
-    </ul>
-
     <h2>Apache Qpid Broker-J</h2>
 
     <p>
@@ -414,9 +352,6 @@ az servicebus topic subscription create --resource-group $RG \\
     <ul>
       <li><strong>RabbitMQ</strong> — hit <code>GET /api/queues/%2F/&lt;queue&gt;</code> on the
         Management API and assert HTTP 200 in a healthcheck.</li>
-      <li><strong>Azure SB</strong> — use the <code>@azure/service-bus-management</code> SDK
-        <code>queueExists()</code> / <code>topicExists()</code> in an <code>OnApplicationBootstrap</code>
-        hook.</li>
       <li><strong>Artemis</strong> — JMX or the Jolokia REST endpoint.</li>
     </ul>
 
@@ -461,13 +396,12 @@ az servicebus topic subscription create --resource-group $RG \\
 [AmqpConsumerExplorer] broker 'default': topology manifests written:
 [AmqpConsumerExplorer]   - /tmp/amqp-topology/default.rabbitmq.json
 [AmqpConsumerExplorer]   - /tmp/amqp-topology/default.artemis.xml
-[AmqpConsumerExplorer]   - /tmp/amqp-topology/default.azure-service-bus.sh
 [AmqpConsumerExplorer]   - /tmp/amqp-topology/default.qpid.json</app-code>
 
     <p>What goes into each manifest:</p>
     <ul>
       <li>One queue per <code>&#64;Consume(addr)</code> (quorum on RabbitMQ, anycast on Artemis, …)</li>
-      <li>One stream / topic per <code>&#64;Subscribe(addr)</code> (stream on RabbitMQ, multicast on Artemis, topic + sub on Azure SB, …)</li>
+      <li>One stream / topic per <code>&#64;Subscribe(addr)</code> (stream on RabbitMQ, multicast on Artemis, …)</li>
       <li>The <code>replyStreamAddress</code> if declared (used by <code>send()</code>)</li>
       <li>The <code>defaultDlqAddress</code> and the DLX wiring if any consumer uses <code>dlq: true</code></li>
     </ul>
@@ -477,7 +411,6 @@ az servicebus topic subscription create --resource-group $RG \\
       <tbody>
         <tr><td>RabbitMQ</td><td><code>definitions.json</code> snippet (queues + exchanges + bindings)</td><td><code>default.rabbitmq.json</code></td></tr>
         <tr><td>Artemis</td><td><code>broker.xml</code> snippet (<code>&lt;addresses&gt;</code> + <code>&lt;address-settings&gt;</code>)</td><td><code>default.artemis.xml</code></td></tr>
-        <tr><td>Azure Service Bus</td><td>bash script with <code>az servicebus</code> commands</td><td><code>default.azure-service-bus.sh</code></td></tr>
         <tr><td>Qpid Broker-J</td><td><code>config.json</code> snippet</td><td><code>default.qpid.json</code></td></tr>
       </tbody>
     </table>

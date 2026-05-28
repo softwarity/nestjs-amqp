@@ -1,0 +1,123 @@
+{
+  "rabbit_version": "4.0.0",
+  "users": [
+    { "name": "guest", "password": "guest", "tags": "administrator" }
+  ],
+  "vhosts": [{ "name": "/" }],
+  "permissions": [
+    {
+      "user": "guest",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+
+  "exchanges": [
+    {
+      "name": "integ.dlx",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+
+  "queues": [
+    {
+      "name": "integ.simple",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    },
+    {
+      "name": "integ.request-reply",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    },
+    {
+      "name": "integ.broadcast",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "stream", "x-max-age": "10m" }
+    },
+    {
+      "name": "integ.retry",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 20,
+        "x-dead-letter-exchange": "integ.dlx",
+        "x-dead-letter-routing-key": "integ.retry"
+      }
+    },
+    {
+      "name": "integ.dlq-test",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 20,
+        "x-dead-letter-exchange": "integ.dlx",
+        "x-dead-letter-routing-key": "integ.dlq-test"
+      }
+    },
+    {
+      "name": "integ.dlq-holding",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    },
+    {
+      "name": "integ.replies",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "stream", "x-max-age": "5m" }
+    },
+    {
+      "name": "integ.codec",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    },
+    {
+      "name": "integ.simple-locator",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    }
+  ],
+
+  "bindings": [
+    {
+      "source": "integ.dlx",
+      "vhost": "/",
+      "destination": "integ.dlq-holding",
+      "destination_type": "queue",
+      "routing_key": "integ.retry",
+      "arguments": {}
+    },
+    {
+      "source": "integ.dlx",
+      "vhost": "/",
+      "destination": "integ.dlq-holding",
+      "destination_type": "queue",
+      "routing_key": "integ.dlq-test",
+      "arguments": {}
+    }
+  ]
+}

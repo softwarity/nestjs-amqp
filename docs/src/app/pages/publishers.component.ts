@@ -245,7 +245,7 @@ export class DynamicPublisher &#123;
       <li><strong>RabbitMQ 4.x</strong>: rejects bare names
         (<code>amqp_address_v1_not_permitted</code>) and requires the v2 scheme — the library prepends
         <code>/queues/</code> automatically when the peer's brand is detected as RabbitMQ.</li>
-      <li><strong>Artemis, Qpid, Azure Service Bus</strong>: accept bare names, no prefix added.</li>
+      <li><strong>Artemis and Qpid</strong>: accept bare names, no prefix added.</li>
       <li><strong>Any address starting with <code>/</code></strong> passes through unchanged — escape
         hatch for custom routing (exchanges, sub-queues, …) on any broker.</li>
     </ul>

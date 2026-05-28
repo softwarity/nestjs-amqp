@@ -16,7 +16,7 @@ export type StreamOffset = 'first' | 'last' | 'next' | number | Date;
  *   - `'immediate'` — the framework calls
  *     `delivery.modified({ delivery_failed: true })`. Re-delivery timing
  *     depends entirely on the broker: Artemis honours its `redelivery-delay`
- *     setting, RabbitMQ / Azure SB / Qpid redeliver as soon as they can.
+ *     setting, RabbitMQ / Qpid redeliver as soon as they can.
  *   - `{ kind: 'fixed', delayMs }` — fixed delay between attempts. Will be
  *     implemented in 0.3.x via broker-specific scheduled republish.
  *   - `{ kind: 'exponential', initialMs, multiplier, maxMs }` — exponential

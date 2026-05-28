@@ -200,11 +200,6 @@ onPayment(
           <td>Topology workaround: TTL retry queue or <code>rabbitmq_delayed_message_exchange</code> plugin</td>
         </tr>
         <tr>
-          <td>Azure Service Bus</td>
-          <td>❌ Immediate (on abandon)</td>
-          <td>Custom scheduled-send pattern</td>
-        </tr>
-        <tr>
           <td>Qpid</td>
           <td>❌ Immediate</td>
           <td>—</td>
@@ -215,7 +210,7 @@ onPayment(
     <p>
       <strong>If you're on Artemis</strong>, configure <code>redelivery-delay</code> broker-side and the
       retry timing you want is achieved with no client code.
-      <strong>If you're on RabbitMQ / Azure SB / Qpid</strong>, retries with
+      <strong>If you're on RabbitMQ or Qpid</strong>, retries with
       <code>retryPolicy: 'immediate'</code> hammer your handler in a tight loop — which is exactly when
       <code>retryPolicy: 'exponential'</code> (coming in 0.3.x) will become useful.
     </p>

@@ -1,0 +1,43 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: nestjs-amqp-integ-rabbit
+    ports:
+      # Non-default host ports to avoid colliding with a local RabbitMQ.
+      # Inside the container the broker still listens on 5672 / 15672.
+      - "5674:5672"
+      - "15674:15672"
+    volumes:
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  artemis:
+    image: apache/activemq-artemis:latest-alpine
+    container_name: nestjs-amqp-integ-artemis
+    ports:
+      - "5675:5672"   # AMQP
+      - "8161:8161"   # web console (handy for debug)
+    environment:
+      ARTEMIS_USER: artemis
+      ARTEMIS_PASSWORD: artemis
+      # Accept anonymous SASL so the lib's auth-less connect works.
+      ANONYMOUS_LOGIN: "true"
+    # NOTE: we do NOT mount a custom broker.xml — the Apache image's entrypoint
+    # runs `artemis create` on first boot to generate /var/lib/artemis-instance,
+    # and mounting broker.xml under etc/ would short-circuit that init (exit
+    # 127). We rely on the default broker.xml (auto-create-queues = true) which
+    # covers all but the topology-heavy scenarios (multicast broadcast and
+    # DLX-routed DLQ) — those are .skip'd on Artemis with a comment.
+    healthcheck:
+      # wget is part of busybox on the alpine image; curl may not be.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8161/console/ >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s

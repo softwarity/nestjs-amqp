@@ -12,7 +12,6 @@
     "activemq",
     "artemis",
     "qpid",
-    "azure-service-bus",
     "rxjs",
     "decorator",
     "messaging",
@@ -44,7 +43,8 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:cov": "jest --coverage"
+    "test:cov": "jest --coverage",
+    "test:integration": "jest --config integration/jest.config.js"
   },
   "engines": {
     "node": ">=20.0.0"

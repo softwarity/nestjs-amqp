@@ -27,7 +27,7 @@ import { CodeComponent } from '../code/code.component';
     <ul>
       <li>Node.js &ge; 20</li>
       <li>NestJS &ge; 10 (tested with 10 and 11)</li>
-      <li>Brokers: RabbitMQ 4.x, ActiveMQ Artemis, Apache Qpid, Azure Service Bus</li>
+      <li>Brokers: RabbitMQ 4.x, ActiveMQ Artemis, Apache Qpid</li>
     </ul>
 
     <h3>1. Install</h3>
@@ -193,7 +193,7 @@ export class OrdersListener &#123;
       Read <a routerLink="/configuration">Configuration</a> for the full option reference,
       <a routerLink="/publishers">Publishers</a> and <a routerLink="/consumers">Consumers</a> for the
       decorator details, or <a routerLink="/broker-topology">Broker topology</a> for full IaC examples on
-      RabbitMQ 4.x, Artemis, Azure Service Bus, and Qpid.
+      RabbitMQ 4.x, Artemis, and Qpid.
     </p>
   `,
 })

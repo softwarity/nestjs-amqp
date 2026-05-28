@@ -15,7 +15,7 @@ import type { ExpectedDestination } from './topology-manifest';
  *  field. Used for diagnostics and to gate broker-specific features
  *  (delayed redelivery in 0.3.x). `'unknown'` means we couldn't recognise
  *  the product string — falls back to AMQP-standard behaviour everywhere. */
-export type BrokerBrand = 'rabbitmq' | 'artemis' | 'azure-service-bus' | 'qpid' | 'unknown';
+export type BrokerBrand = 'rabbitmq' | 'artemis' | 'qpid' | 'unknown';
 
 /**
  * Low-level rhea wrapper for **one** broker. Owns the single AMQP 1.0
@@ -117,12 +117,18 @@ export class BrokerConnection {
       return;
     }
     const url = new URL(this.options.url);
+    // Credentials embedded in the URL (`amqp://user:pass@host`) take effect
+    // only when explicit `username` / `password` options are unset. Lets
+    // callers pass a single connection string without splitting credentials
+    // out into separate config keys — a common 12-factor pattern.
+    const urlUser = url.username ? decodeURIComponent(url.username) : undefined;
+    const urlPass = url.password ? decodeURIComponent(url.password) : undefined;
     const conn = rhea.connect({
       host: url.hostname || 'localhost',
       port: url.port ? Number(url.port) : 5672,
       transport: url.protocol === 'amqps:' ? 'tls' : 'tcp',
-      username: this.options.username,
-      password: this.options.password,
+      username: this.options.username ?? urlUser,
+      password: this.options.password ?? urlPass,
       container_id: this.options.name,
       idle_time_out: this.options.idleTimeoutMs,
       reconnect: true,
@@ -314,7 +320,7 @@ export class BrokerConnection {
    * Normalise a user-facing address (a bare name) to the broker-specific
    * scheme. RabbitMQ 4.x rejects bare names (`amqp_address_v1_not_permitted`)
    * and requires the v2 scheme `/queues/<name>`, `/exchanges/...`, `/topic/...`.
-   * Artemis, Qpid and Azure Service Bus accept bare names directly.
+   * Artemis and Qpid accept bare names directly.
    *
    * We auto-detect via the peer's `product` (see {@link brand}) — the brand
    * is known by the time we reach this point (see lifecycle notes on
@@ -346,8 +352,6 @@ export class BrokerConnection {
     const lower = product.toLowerCase();
     if (lower.includes('rabbitmq')) this.brandDetected = 'rabbitmq';
     else if (lower.includes('artemis')) this.brandDetected = 'artemis';
-    else if (lower.includes('service bus') || lower.includes('servicebus') || lower.includes('azure'))
-      this.brandDetected = 'azure-service-bus';
     else if (lower.includes('qpid')) this.brandDetected = 'qpid';
     else this.brandDetected = 'unknown';
   }

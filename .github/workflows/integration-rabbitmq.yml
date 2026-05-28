@@ -1,0 +1,30 @@
+name: Integration tests (RabbitMQ)
+on:
+  push:
+    branches:
+      - '*'
+jobs:
+  rabbitmq:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Start RabbitMQ container
+        run: docker compose -f integration/docker-compose.yml up rabbitmq -d --wait
+      - name: Run RabbitMQ integration spec
+        env:
+          # SKIP/KEEP let Jest reuse the container we manage in this workflow
+          SKIP_BROKER_SETUP: '1'
+          KEEP_BROKERS: '1'
+          AMQP_RABBITMQ_URL: amqp://guest:guest@localhost:5674
+        run: npx jest --config integration/jest.config.js integration/specs/rabbitmq.spec.ts
+      - name: Dump RabbitMQ logs on failure
+        if: failure()
+        run: docker compose -f integration/docker-compose.yml logs rabbitmq --no-color
+      - name: Teardown
+        if: always()
+        run: docker compose -f integration/docker-compose.yml down -v

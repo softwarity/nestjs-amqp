@@ -15,3 +15,7 @@ npm-debug.log*
 docs/node_modules
 docs/dist
 docs/.angular
+
+# Integration tests — local artifacts
+integration/.docker-volumes
+.amqp-topology

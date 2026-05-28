@@ -1,5 +1,5 @@
-name: Build softwarity/nestjs-amqp
-run-name: ${{ github.actor }} run build on ${{ github.repository }}
+name: Unit tests
+run-name: ${{ github.actor }} run unit tests on ${{ github.repository }}
 on:
   push:
     branches:
@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
       - run: npm ci
       - run: npm run lint
       - run: npm test

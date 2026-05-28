@@ -84,7 +84,7 @@ export interface BrokerOptions {
    * ready-to-merge snippet to `os.tmpdir()/amqp-topology/<name>.<brand>.<ext>`
    * listing every queue / stream / DLX / DLQ this service expects to find
    * broker-side. Format depends on the brand: RabbitMQ JSON, Artemis XML,
-   * Azure SB bash, Qpid JSON, generic text fallback for unknown peers.
+   * Qpid JSON, generic text fallback for unknown peers.
    *
    * Default `false`. When disabled, the broker logs a one-line hint at boot
    * so the feature stays discoverable.
