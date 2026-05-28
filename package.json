@@ -1,6 +1,6 @@
 {
   "name": "@softwarity/nestjs-amqp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "AMQP 1.0 integration for NestJS, powered by rhea. Decorator-based publishers and consumers, RxJS-friendly, with optional DLQ browser.",
   "keywords": [
     "nestjs",
