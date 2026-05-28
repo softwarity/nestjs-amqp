@@ -81,7 +81,6 @@ import &#123; AmqpModule &#125; from '&#64;softwarity/nestjs-amqp';
 &#64;Module(&#123;
   imports: [
     AmqpModule.forRoot(&#123;
-      name: 'default',
       url: 'amqp://localhost:5672',
       username: 'guest',
       password: 'guest',
@@ -91,10 +90,12 @@ import &#123; AmqpModule &#125; from '&#64;softwarity/nestjs-amqp';
 export class AppModule &#123;&#125;</app-code>
 
     <p>
-      A single broker named <code>default</code>. Because only one broker is configured, the
-      <code>brokerName</code> argument is optional on every decorator and on the locator — the library
-      resolves the lone broker automatically. For multi-broker setups, pass an array — see
-      <a routerLink="/multi-broker">Multi-broker</a>.
+      A single broker (the name is implicit — internally <code>'default'</code>). Because only one
+      broker is configured, the <code>brokerName</code> argument is optional on every decorator and on
+      the locator — the library resolves the lone broker automatically. If you want a custom name
+      (visible as the AMQP container ID on the broker management UI), wrap in an array even with a
+      single entry: <code>AmqpModule.forRoot([&#123; name: 'my-svc', url, ... &#125;])</code>. For
+      multi-broker setups, see <a routerLink="/multi-broker">Multi-broker</a>.
     </p>
 
     <h3>4. Publish — fire and forget</h3>

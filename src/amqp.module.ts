@@ -9,6 +9,7 @@ import {
   type BrokerOptions,
   resolveAmqpOptions,
   type ResolvedAmqpModuleOptions,
+  type SingleBrokerOptions,
 } from './amqp.options';
 import { BrokerRegistry } from './broker-registry';
 import { DlqBrowserService } from './dlq-browser.service';
@@ -33,7 +34,7 @@ import { DlqBrowserService } from './dlq-browser.service';
 @Global()
 @Module({})
 export class AmqpModule {
-  static forRoot(options: BrokerOptions | BrokerOptions[]): DynamicModule {
+  static forRoot(options: SingleBrokerOptions | BrokerOptions[]): DynamicModule {
     const resolved = resolveAmqpOptions(options);
     const optionsProvider: Provider = {
       provide: AMQP_MODULE_OPTIONS,

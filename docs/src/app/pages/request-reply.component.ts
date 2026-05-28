@@ -69,7 +69,6 @@ import { CodeComponent } from '../code/code.component';
     <h3>2. Set <code>replyStreamAddress</code> on the broker options</h3>
 
     <app-code lang="ts">AmqpModule.forRoot(&#123;
-  name: 'primary',
   url: 'amqp://localhost:5672',
   username: '...', password: '...',
   replyStreamAddress: 'my-service.replies',   // ← REQUIRED for send()

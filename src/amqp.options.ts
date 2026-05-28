@@ -104,10 +104,26 @@ export interface ResolvedAmqpModuleOptions {
   readonly brokerOrder: ReadonlyArray<string>;
 }
 
+/**
+ * Single-broker form of {@link BrokerOptions} — the `name` field is omitted
+ * because it isn't referenced by anything in the single-broker case (the
+ * lone broker is resolved automatically by decorators and the locator). The
+ * library internally uses the name `'default'`.
+ *
+ * If you want a custom broker name (visible as the AMQP container ID on the
+ * broker's management UI, and used in the DLQ admin URL), switch to the
+ * multi-broker form by wrapping in an array — even with a single entry:
+ * `AmqpModule.forRoot([{ name: 'my-svc', url, ... }])`.
+ */
+export type SingleBrokerOptions = Omit<BrokerOptions, 'name'>;
+
 /** Factory contract for `AmqpModule.forRootAsync({ useClass })`. Returns one
- *  or several broker configurations. */
+ *  or several broker configurations (same shape as the static `forRoot` arg). */
 export interface AmqpOptionsFactory {
-  createAmqpOptions(): Promise<BrokerOptions | BrokerOptions[]> | BrokerOptions | BrokerOptions[];
+  createAmqpOptions():
+    | Promise<SingleBrokerOptions | BrokerOptions[]>
+    | SingleBrokerOptions
+    | BrokerOptions[];
 }
 
 /** Options for `AmqpModule.forRootAsync(...)`. Mirrors the NestJS standard
@@ -118,22 +134,31 @@ export interface AmqpModuleAsyncOptions extends Pick<ModuleMetadata, 'imports'> 
   readonly useClass?: Type<AmqpOptionsFactory>;
   readonly useFactory?: (
     ...args: any[]
-  ) => Promise<BrokerOptions | BrokerOptions[]> | BrokerOptions | BrokerOptions[];
+  ) =>
+    | Promise<SingleBrokerOptions | BrokerOptions[]>
+    | SingleBrokerOptions
+    | BrokerOptions[];
   readonly inject?: any[];
 }
 
 /** Injection token for the resolved root options. */
 export const AMQP_MODULE_OPTIONS = Symbol('AMQP_MODULE_OPTIONS');
 
+/** Internal default broker name used when `forRoot` receives a single broker
+ *  config (the `name` field is omitted in that form). */
+const DEFAULT_BROKER_NAME = 'default';
+
 /**
- * Normalise + apply defaults. Accepts a single broker (the 90% case) or an
- * array (multi-broker). Throws if:
+ * Normalise + apply defaults. Accepts a single broker (`name`-less, the 90%
+ * case → internally renamed to `'default'`) or an array of `BrokerOptions`
+ * (multi-broker, names required). Throws if:
  *   - input is an empty array
- *   - any broker has an empty `name` or `url`
+ *   - any broker (in the array form) has an empty `name` or `url`
  *   - two brokers share the same `name`
+ *   - the single broker has an empty `url`
  */
-export function resolveAmqpOptions(opts: BrokerOptions | BrokerOptions[]): ResolvedAmqpModuleOptions {
-  const list = Array.isArray(opts) ? opts : [opts];
+export function resolveAmqpOptions(opts: SingleBrokerOptions | BrokerOptions[]): ResolvedAmqpModuleOptions {
+  const list: BrokerOptions[] = Array.isArray(opts) ? opts : [{ name: DEFAULT_BROKER_NAME, ...opts }];
   if (list.length === 0) {
     throw new Error('AmqpModule: at least one broker must be configured');
   }

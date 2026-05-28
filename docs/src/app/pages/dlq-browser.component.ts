@@ -83,7 +83,7 @@ export class AdminService &#123;
 
     <app-code lang="ts">&#64;Module(&#123;
   imports: [
-    AmqpModule.forRoot(&#123; name: 'primary', url: 'amqp://...', /* ... */ &#125;),
+    AmqpModule.forRoot(&#123; url: 'amqp://...', /* ... */ &#125;),
     DlqAdminModule,
   ],
 &#125;)

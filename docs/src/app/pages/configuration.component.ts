@@ -17,17 +17,28 @@ import { CodeComponent } from '../code/code.component';
 
     <h3>forRoot — minimal (single broker)</h3>
 
+    <p>
+      The single-broker form is a flat object <strong>without a <code>name</code> field</strong> — the
+      name is internally <code>'default'</code> and isn't referenced by anything in your code
+      (decorators resolve the lone broker automatically).
+    </p>
+
     <app-code lang="ts">AmqpModule.forRoot(&#123;
-  name: 'default',
   url: 'amqp://localhost:5672',
   username: 'guest',
   password: 'guest',
 &#125;)</app-code>
 
+    <p>
+      If you want a custom broker name (visible as the AMQP container ID on the broker management UI),
+      switch to the array form — even with a single entry:
+    </p>
+
+    <app-code lang="ts">AmqpModule.forRoot([&#123; name: 'bulletin-edition-svc', url: 'amqp://...' &#125;])</app-code>
+
     <h3>forRoot — full (single broker, all options)</h3>
 
     <app-code lang="ts">AmqpModule.forRoot(&#123;
-  name: 'primary',
   url: 'amqp://localhost:5672',
   enabled: true,                        // default true; set to false to load inactive
   username: 'svc',
@@ -62,7 +73,6 @@ import &#123; AmqpModule &#125; from '&#64;softwarity/nestjs-amqp';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) =&gt; (&#123;
-        name: 'default',
         url: config.get('AMQP_URL')!,
         username: config.get('AMQP_USER'),
         password: config.get('AMQP_PASSWORD'),
@@ -86,9 +96,8 @@ export class AppModule &#123;&#125;</app-code>
 export class AmqpOptionsProvider implements AmqpOptionsFactory &#123;
   constructor(private readonly config: ConfigService) &#123;&#125;
 
-  createAmqpOptions(): BrokerOptions &#123;
+  createAmqpOptions(): SingleBrokerOptions &#123;
     return &#123;
-      name: 'default',
       url: this.config.get('AMQP_URL')!,
     &#125;;
   &#125;

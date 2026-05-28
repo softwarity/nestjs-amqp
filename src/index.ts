@@ -5,6 +5,7 @@ export {
   type BrokerOptions,
   type ResolvedAmqpModuleOptions,
   type ResolvedBrokerOptions,
+  type SingleBrokerOptions,
   AMQP_MODULE_OPTIONS,
 } from './amqp.options';
 

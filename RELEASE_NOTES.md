@@ -1,6 +1,69 @@
 # Release Notes
 
-## 0.3.2
+## 0.3.2 — Name-less single broker (BREAKING)
+
+Type-level ergonomic tightening: `name` is now forbidden in the single-broker form of `forRoot`. It was always irrelevant in single-broker mode (the lone broker is resolved automatically by every decorator and the locator); making it a TypeScript error removes a useless decision from the 90% case.
+
+### Breaking changes
+
+- **`forRoot` single-broker form no longer accepts `name`.** The signature is now `forRoot(options: SingleBrokerOptions | BrokerOptions[])`, where `SingleBrokerOptions = Omit<BrokerOptions, 'name'>`. The internal name is `'default'` in single-broker mode. If you want a custom broker name (visible as the AMQP container ID on the broker management UI), switch to the array form — even with a single entry.
+
+  Before (0.3.1):
+  ```ts
+  AmqpModule.forRoot({
+    name: 'default',
+    url: 'amqp://localhost:5672',
+    username: 'guest', password: 'guest',
+  })
+  ```
+  After (0.3.2):
+  ```ts
+  // single broker — name forbidden, becomes 'default' internally
+  AmqpModule.forRoot({
+    url: 'amqp://localhost:5672',
+    username: 'guest', password: 'guest',
+  })
+
+  // single broker with custom name → array form, single entry
+  AmqpModule.forRoot([{
+    name: 'bulletin-edition-svc',
+    url: 'amqp://localhost:5672',
+    username: 'guest', password: 'guest',
+  }])
+  ```
+  The boot log reflects the resolved name: `[BrokerConnection:default]` (single form) or `[BrokerConnection:bulletin-edition-svc]` (array form with custom name).
+
+- **`AmqpOptionsFactory.createAmqpOptions()` return type updated.** It now returns `SingleBrokerOptions | BrokerOptions[]` — same constraint as `forRoot`. A factory class returning a single broker must drop the `name` field.
+
+### Migration guide
+
+Find every single-broker `forRoot` call site and drop the `name` line:
+
+```diff
+ AmqpModule.forRoot({
+-  name: 'default',
+   url: cfg.get('AMQP_URL')!,
+   username: cfg.get('AMQP_USER'),
+   password: cfg.get('AMQP_PASSWORD'),
+ })
+```
+
+If you were using a non-`'default'` name in single-broker mode and relied on it being visible on the broker management UI, switch to the array form to keep it:
+
+```diff
+-AmqpModule.forRoot({
++AmqpModule.forRoot([{
+   name: 'bulletin-edition-svc',
+   url: cfg.get('AMQP_URL')!,
+-})
++}])
+```
+
+### Internal changes
+
+- New `SingleBrokerOptions` type exported from the public barrel for typed factory implementations.
+- `resolveAmqpOptions` accepts the new union; injects `name: 'default'` when the input isn't an array.
+- 3 new tests in `amqp.options.spec.ts` cover the name-less single form, the single-entry array escape hatch, and the implicit-default-name path.
 
 ---
 

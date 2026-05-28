@@ -91,7 +91,6 @@ import { AmqpModule } from '@softwarity/nestjs-amqp';
 @Module({
   imports: [
     AmqpModule.forRoot({
-      name: 'default',
       url: 'amqp://localhost:5672',
       username: 'guest',
       password: 'guest',
@@ -101,7 +100,7 @@ import { AmqpModule } from '@softwarity/nestjs-amqp';
 export class AppModule {}
 ```
 
-Because only one broker is configured, the `brokerName` argument is optional on every decorator and on the locator — the library resolves the lone broker automatically.
+A single broker (the name is implicit — internally `'default'`). Because only one broker is configured, the `brokerName` argument is optional on every decorator and on the locator — the library resolves the lone broker automatically. If you want a custom name (visible as the AMQP container ID on the broker management UI), wrap in an array even with one entry: `AmqpModule.forRoot([{ name: 'my-svc', url, ... }])`.
 
 ### 3. Publish — fire and forget
 
@@ -204,7 +203,6 @@ The bootstrap above intentionally skips three optional features. Add them à la 
 
 ```ts
 AmqpModule.forRoot({
-  name: 'default',
   url: 'amqp://localhost:5672',
   username: 'guest', password: 'guest',
   replyStreamAddress: 'my-service.replies',   // ← REQUIRED for send()
@@ -290,7 +288,6 @@ Retry and DLQ are off by default (`maxDelivery: 1`, `dlq: false`) — handler er
 
 ```ts
 AmqpModule.forRoot({
-  name: 'default',
   url: 'amqp://localhost:5672',
   username: 'guest', password: 'guest',
   defaultDlqAddress: 'my-service.dlq',
@@ -418,7 +415,7 @@ export class DynamicPublisher {
 ```ts
 @Module({
   imports: [
-    AmqpModule.forRoot({ name: 'default', url: '...', /* ... */ }),
+    AmqpModule.forRoot({ url: '...', /* ... */ }),
     DlqAdminModule,   // adds /admin/dlq/... routes
   ],
 })
