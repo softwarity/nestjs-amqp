@@ -2,10 +2,11 @@ import { BrokerRegistry } from '../src/broker-registry';
 import { resolveAmqpOptions } from '../src/amqp.options';
 
 function makeRegistry(brokerNames: string[]): BrokerRegistry {
-  const opts = resolveAmqpOptions({
-    enabled: false, // keep BrokerConnection.start() a no-op so we don't touch rhea
-    brokers: brokerNames.map((name, idx) => ({ name, url: `amqp://broker-${idx}` })),
-  });
+  const opts = resolveAmqpOptions(
+    // enabled:false on every broker keeps BrokerConnection.start() a no-op
+    // so we don't touch rhea in unit tests.
+    brokerNames.map((name, idx) => ({ name, url: `amqp://broker-${idx}`, enabled: false })),
+  );
   return new BrokerRegistry(opts);
 }
 

@@ -2,42 +2,53 @@ import { resolveAmqpOptions } from '../src/amqp.options';
 
 describe('resolveAmqpOptions', () => {
   describe('validation', () => {
-    it('throws when `brokers` is missing', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect(() => resolveAmqpOptions({} as any)).toThrow(/brokers.*at least one/);
-    });
-
-    it('throws when `brokers` is empty', () => {
-      expect(() => resolveAmqpOptions({ brokers: [] })).toThrow(/at least one/);
+    it('throws when input is an empty array', () => {
+      expect(() => resolveAmqpOptions([])).toThrow(/at least one broker/);
     });
 
     it('throws when a broker has an empty name', () => {
-      expect(() => resolveAmqpOptions({ brokers: [{ name: '', url: 'amqp://x' }] })).toThrow(/non-empty `name`/);
-      expect(() => resolveAmqpOptions({ brokers: [{ name: '   ', url: 'amqp://x' }] })).toThrow(/non-empty `name`/);
+      expect(() => resolveAmqpOptions({ name: '', url: 'amqp://x' })).toThrow(/non-empty `name`/);
+      expect(() => resolveAmqpOptions({ name: '   ', url: 'amqp://x' })).toThrow(/non-empty `name`/);
     });
 
     it('throws when a broker has an empty url', () => {
-      expect(() => resolveAmqpOptions({ brokers: [{ name: 'a', url: '' }] })).toThrow(/non-empty `url`/);
+      expect(() => resolveAmqpOptions({ name: 'a', url: '' })).toThrow(/non-empty `url`/);
     });
 
     it('throws when two brokers share the same name', () => {
       expect(() =>
-        resolveAmqpOptions({
-          brokers: [
-            { name: 'a', url: 'amqp://x' },
-            { name: 'a', url: 'amqp://y' },
-          ],
-        }),
+        resolveAmqpOptions([
+          { name: 'a', url: 'amqp://x' },
+          { name: 'a', url: 'amqp://y' },
+        ]),
       ).toThrow(/duplicate broker name/);
+    });
+  });
+
+  describe('input forms', () => {
+    it('accepts a single BrokerOptions (90% case, no wrapping)', () => {
+      const r = resolveAmqpOptions({ name: 'default', url: 'amqp://localhost:5672' });
+      expect(r.brokers.size).toBe(1);
+      expect(r.brokerOrder).toEqual(['default']);
+      expect(r.brokers.get('default')?.url).toBe('amqp://localhost:5672');
+    });
+
+    it('accepts an array of BrokerOptions (multi-broker)', () => {
+      const r = resolveAmqpOptions([
+        { name: 'primary', url: 'amqp://a' },
+        { name: 'analytics', url: 'amqp://b' },
+      ]);
+      expect(r.brokers.size).toBe(2);
+      expect(r.brokerOrder).toEqual(['primary', 'analytics']);
     });
   });
 
   describe('defaults', () => {
     it('applies all defaults on a minimal broker', () => {
-      const r = resolveAmqpOptions({ brokers: [{ name: 'primary', url: 'amqp://localhost:5672' }] });
-      expect(r.enabled).toBe(true);
+      const r = resolveAmqpOptions({ name: 'primary', url: 'amqp://localhost:5672' });
       const b = r.brokers.get('primary')!;
       expect(b.url).toBe('amqp://localhost:5672');
+      expect(b.enabled).toBe(true);
       expect(b.reconnectLimit).toBe(-1);
       expect(b.initialReconnectDelayMs).toBe(100);
       expect(b.maxReconnectDelayMs).toBe(30000);
@@ -47,25 +58,31 @@ describe('resolveAmqpOptions', () => {
       expect(b.defaultDlqAddress).toBeUndefined();
     });
 
-    it('preserves enabled=false at the root', () => {
+    it('preserves enabled=false per broker', () => {
       const r = resolveAmqpOptions({
+        name: 'primary',
+        url: 'amqp://localhost',
         enabled: false,
-        brokers: [{ name: 'primary', url: 'amqp://localhost' }],
       });
-      expect(r.enabled).toBe(false);
+      expect(r.brokers.get('primary')?.enabled).toBe(false);
+    });
+
+    it('lets one broker be disabled while another stays enabled', () => {
+      const r = resolveAmqpOptions([
+        { name: 'primary', url: 'amqp://a' },
+        { name: 'analytics', url: 'amqp://b', enabled: false },
+      ]);
+      expect(r.brokers.get('primary')?.enabled).toBe(true);
+      expect(r.brokers.get('analytics')?.enabled).toBe(false);
     });
 
     it('preserves explicit overrides', () => {
       const r = resolveAmqpOptions({
-        brokers: [
-          {
-            name: 'primary',
-            url: 'amqp://localhost',
-            replyStreamAddress: 'my-svc.replies',
-            defaultDlqAddress: 'my-svc.dlq',
-            reconnectLimit: 10,
-          },
-        ],
+        name: 'primary',
+        url: 'amqp://localhost',
+        replyStreamAddress: 'my-svc.replies',
+        defaultDlqAddress: 'my-svc.dlq',
+        reconnectLimit: 10,
       });
       const b = r.brokers.get('primary')!;
       expect(b.replyStreamAddress).toBe('my-svc.replies');
@@ -76,24 +93,20 @@ describe('resolveAmqpOptions', () => {
 
   describe('multi-broker', () => {
     it('preserves declaration order in `brokerOrder`', () => {
-      const r = resolveAmqpOptions({
-        brokers: [
-          { name: 'primary', url: 'amqp://a' },
-          { name: 'analytics', url: 'amqp://b' },
-          { name: 'audit', url: 'amqp://c' },
-        ],
-      });
+      const r = resolveAmqpOptions([
+        { name: 'primary', url: 'amqp://a' },
+        { name: 'analytics', url: 'amqp://b' },
+        { name: 'audit', url: 'amqp://c' },
+      ]);
       expect(r.brokerOrder).toEqual(['primary', 'analytics', 'audit']);
       expect(r.brokers.size).toBe(3);
     });
 
     it('indexes each broker by name', () => {
-      const r = resolveAmqpOptions({
-        brokers: [
-          { name: 'primary', url: 'amqp://a' },
-          { name: 'analytics', url: 'amqp://b' },
-        ],
-      });
+      const r = resolveAmqpOptions([
+        { name: 'primary', url: 'amqp://a' },
+        { name: 'analytics', url: 'amqp://b' },
+      ]);
       expect(r.brokers.get('primary')?.url).toBe('amqp://a');
       expect(r.brokers.get('analytics')?.url).toBe('amqp://b');
       expect(r.brokers.get('unknown')).toBeUndefined();

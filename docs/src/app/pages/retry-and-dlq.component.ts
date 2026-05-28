@@ -111,12 +111,10 @@ import { CodeComponent } from '../code/code.component';
     <p>Optional but recommended — the DLQ admin UI uses it as the pre-fill value.</p>
 
     <app-code lang="ts">AmqpModule.forRoot(&#123;
-  brokers: [&#123;
-    name: 'primary',
-    url: 'amqp://localhost:5672',
-    username: '...', password: '...',
-    defaultDlqAddress: 'my-service.dlq',   // ← shown in DLQ admin UI
-  &#125;],
+  name: 'primary',
+  url: 'amqp://localhost:5672',
+  username: '...', password: '...',
+  defaultDlqAddress: 'my-service.dlq',   // ← shown in DLQ admin UI
 &#125;)</app-code>
 
     <h4>3. Enable the policy on the decorator</h4>

@@ -6,7 +6,7 @@ import { BrokerPublisher } from './broker-publisher';
 
 /**
  * Central registry for all broker connections + publishers in the running
- * process. Built from `AmqpModuleOptions.brokers[]` at module init time —
+ * process. Built from the resolved broker list at module init time —
  * instantiates one {@link BrokerConnection} and one {@link BrokerPublisher}
  * per broker, opens every connection, and exposes a lookup API for the
  * rest of the library (decorators, locator, consumer-explorer, DLQ admin).
@@ -26,7 +26,7 @@ export class BrokerRegistry implements OnModuleInit, OnModuleDestroy {
 
   constructor(@Inject(AMQP_MODULE_OPTIONS) private readonly options: ResolvedAmqpModuleOptions) {
     for (const [name, brokerOpts] of options.brokers) {
-      const connection = new BrokerConnection(brokerOpts, options.enabled);
+      const connection = new BrokerConnection(brokerOpts);
       this.connections.set(name, connection);
       this.publishers.set(name, new BrokerPublisher(connection));
     }
@@ -42,11 +42,18 @@ export class BrokerRegistry implements OnModuleInit, OnModuleDestroy {
       this.logger.warn('no brokers configured — AmqpModule is a no-op');
       return;
     }
-    if (!this.options.enabled) {
-      this.logger.log(`AMQP globally disabled — ${this.options.brokers.size} broker(s) loaded but inactive`);
-    } else {
-      this.logger.log(`bringing up ${this.options.brokers.size} broker(s): [${this.options.brokerOrder.join(', ')}]`);
+    const enabled: string[] = [];
+    const disabled: string[] = [];
+    for (const name of this.options.brokerOrder) {
+      (this.options.brokers.get(name)!.enabled ? enabled : disabled).push(name);
     }
+    const summary = [
+      enabled.length > 0 ? `enabled: [${enabled.join(', ')}]` : null,
+      disabled.length > 0 ? `disabled: [${disabled.join(', ')}]` : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
+    this.logger.log(`bringing up ${this.options.brokers.size} broker(s) — ${summary}`);
     for (const connection of this.connections.values()) {
       connection.start();
     }

@@ -21,34 +21,35 @@ import { CodeComponent } from '../code/code.component';
       automatically. Read this page only when you actually need a second broker.
     </p>
 
-    <h3>Declare several brokers</h3>
+    <h3>Declare several brokers — pass an array</h3>
 
-    <app-code lang="ts">AmqpModule.forRoot(&#123;
-  brokers: [
-    &#123;
-      name: 'primary',
-      url: 'amqp://broker-a:5672',
-      username: 'svc', password: '...',
-      replyStreamAddress: 'my-svc.replies',
-      defaultDlqAddress: 'my-svc.dlq',
-    &#125;,
-    &#123;
-      name: 'analytics',
-      url: 'amqp://broker-b:5672',
-      username: 'svc', password: '...',
-      // No reply stream / DLQ — analytics is emit-only fire-and-forget.
-    &#125;,
-  ],
-&#125;);</app-code>
+    <app-code lang="ts">AmqpModule.forRoot([
+  &#123;
+    name: 'primary',
+    url: 'amqp://broker-a:5672',
+    username: 'svc', password: '...',
+    replyStreamAddress: 'my-svc.replies',
+    defaultDlqAddress: 'my-svc.dlq',
+  &#125;,
+  &#123;
+    name: 'analytics',
+    url: 'amqp://broker-b:5672',
+    username: 'svc', password: '...',
+    enabled: false,    // optional per-broker kill switch — analytics off in dev
+    // No reply stream / DLQ — analytics is emit-only fire-and-forget.
+  &#125;,
+]);</app-code>
 
     <p>Constraints:</p>
     <ul>
       <li><code>name</code> must be unique across all brokers.</li>
-      <li>The order of <code>brokers[]</code> matters: the <strong>first</strong> entry is the
-        "default broker" used by single-broker shortcuts and by the DLQ admin URL fallback.</li>
+      <li>The declaration order matters: the <strong>first</strong> entry is the "default broker" used
+        by single-broker shortcuts and by the DLQ admin URL fallback.</li>
       <li>Each broker manages its own reply stream and DLQ. The names can collide
         (<code>my-svc.replies</code> on both brokers is fine) because they're physically different
         queues on different servers.</li>
+      <li>Each broker has its own <code>enabled</code> flag. Disabling one (e.g. analytics down for
+        maintenance) leaves the others fully operational.</li>
     </ul>
 
     <h3>Pass the broker name on every decorator</h3>

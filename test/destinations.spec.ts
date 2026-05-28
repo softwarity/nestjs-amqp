@@ -3,10 +3,9 @@ import { BrokerRegistry } from '../src/broker-registry';
 import { resolveAmqpOptions } from '../src/amqp.options';
 
 function makeDestinations(brokerNames: string[]): { amqp: AmqpDestinations; registry: BrokerRegistry } {
-  const opts = resolveAmqpOptions({
-    enabled: false,
-    brokers: brokerNames.map((name, idx) => ({ name, url: `amqp://broker-${idx}` })),
-  });
+  const opts = resolveAmqpOptions(
+    brokerNames.map((name, idx) => ({ name, url: `amqp://broker-${idx}`, enabled: false })),
+  );
   const registry = new BrokerRegistry(opts);
   const amqp = new AmqpDestinations(registry);
   return { amqp, registry };

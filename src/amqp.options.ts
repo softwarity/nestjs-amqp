@@ -2,33 +2,19 @@ import type { ModuleMetadata, Type } from '@nestjs/common';
 import type { AmqpBodyCodec } from './body-codec';
 
 /**
- * Static configuration passed to `AmqpModule.forRoot(...)`.
+ * Per-broker connection settings + library behaviour. All fields except
+ * `name` and `url` are optional. Conservative defaults: infinite reconnects,
+ * 60s idle timeout, 30s send timeout, JSON body codec, broker enabled.
  *
- * The module supports one OR several brokers — declared as an array of
- * {@link BrokerOptions}. Each broker is independent: its own connection,
- * its own reply stream, its own DLQ, its own body codec, its own retry
- * timings. Decorators reference brokers by their `name`.
+ * `AmqpModule.forRoot(...)` accepts either a single `BrokerOptions` (the 90%
+ * single-broker case) or an array of them (multi-broker). Each broker is
+ * independent: its own connection, its own reply stream, its own DLQ, its
+ * own body codec, its own retry timings. Decorators reference brokers by
+ * their `name`.
  *
  * If you only have one broker, the `brokerName` argument on
  * `@AmqpQueue` / `@AmqpTopic` / `@Consume` / `@Subscribe` is
  * optional — the lone broker is resolved automatically.
- */
-export interface AmqpModuleOptions {
-  /** Brokers to connect to. Must contain at least one entry; names must be
-   *  unique. */
-  readonly brokers: BrokerOptions[];
-
-  /** Global kill switch. `false` → the module loads but every broker is
-   *  inactive (no connection, consumers not wired, `send()` errors,
-   *  `emit()` is a silent no-op). Useful for local dev without a running
-   *  broker. Default: `true`. */
-  readonly enabled?: boolean;
-}
-
-/**
- * Per-broker connection settings + library behaviour. All fields except
- * `name` and `url` are optional. Conservative defaults: infinite reconnects,
- * 60s idle timeout, 30s send timeout, JSON body codec.
  */
 export interface BrokerOptions {
   /** Unique logical identifier referenced by decorators and the DLQ admin
@@ -37,6 +23,12 @@ export interface BrokerOptions {
 
   /** Broker URL (`amqp://` or `amqps://`). Required. */
   readonly url: string;
+
+  /** Kill switch for this broker. `false` → loaded but inactive (no
+   *  connection, consumers not wired, `send()` errors, `emit()` returns
+   *  `false`). Useful for local dev without a running broker, or to disable
+   *  one broker in a multi-broker setup. Default: `true`. */
+  readonly enabled?: boolean;
 
   /** SASL PLAIN username. */
   readonly username?: string;
@@ -91,6 +83,7 @@ export interface BrokerOptions {
 export interface ResolvedBrokerOptions {
   readonly name: string;
   readonly url: string;
+  readonly enabled: boolean;
   readonly username?: string;
   readonly password?: string;
   readonly reconnectLimit: number;
@@ -105,24 +98,27 @@ export interface ResolvedBrokerOptions {
 
 /** Resolved root options — defaults applied, brokers indexed by name. */
 export interface ResolvedAmqpModuleOptions {
-  readonly enabled: boolean;
   readonly brokers: ReadonlyMap<string, ResolvedBrokerOptions>;
   /** Insertion order preserved — index 0 is the "first" broker, used as the
    *  default by single-broker decorators and by the DLQ admin URL fallback. */
   readonly brokerOrder: ReadonlyArray<string>;
 }
 
-/** Factory contract for `AmqpModule.forRootAsync({ useClass })`. */
+/** Factory contract for `AmqpModule.forRootAsync({ useClass })`. Returns one
+ *  or several broker configurations. */
 export interface AmqpOptionsFactory {
-  createAmqpOptions(): Promise<AmqpModuleOptions> | AmqpModuleOptions;
+  createAmqpOptions(): Promise<BrokerOptions | BrokerOptions[]> | BrokerOptions | BrokerOptions[];
 }
 
 /** Options for `AmqpModule.forRootAsync(...)`. Mirrors the NestJS standard
- *  pattern (useFactory / useClass / useExisting). */
+ *  pattern (useFactory / useClass / useExisting). The factory returns one or
+ *  several broker configurations — same shape as the static `forRoot` arg. */
 export interface AmqpModuleAsyncOptions extends Pick<ModuleMetadata, 'imports'> {
   readonly useExisting?: Type<AmqpOptionsFactory>;
   readonly useClass?: Type<AmqpOptionsFactory>;
-  readonly useFactory?: (...args: any[]) => Promise<AmqpModuleOptions> | AmqpModuleOptions;
+  readonly useFactory?: (
+    ...args: any[]
+  ) => Promise<BrokerOptions | BrokerOptions[]> | BrokerOptions | BrokerOptions[];
   readonly inject?: any[];
 }
 
@@ -130,18 +126,20 @@ export interface AmqpModuleAsyncOptions extends Pick<ModuleMetadata, 'imports'> 
 export const AMQP_MODULE_OPTIONS = Symbol('AMQP_MODULE_OPTIONS');
 
 /**
- * Apply defaults and validate. Throws if:
- *   - `brokers` is missing or empty
+ * Normalise + apply defaults. Accepts a single broker (the 90% case) or an
+ * array (multi-broker). Throws if:
+ *   - input is an empty array
  *   - any broker has an empty `name` or `url`
  *   - two brokers share the same `name`
  */
-export function resolveAmqpOptions(opts: AmqpModuleOptions): ResolvedAmqpModuleOptions {
-  if (!opts.brokers || opts.brokers.length === 0) {
-    throw new Error('AmqpModule: `brokers` is required and must contain at least one entry');
+export function resolveAmqpOptions(opts: BrokerOptions | BrokerOptions[]): ResolvedAmqpModuleOptions {
+  const list = Array.isArray(opts) ? opts : [opts];
+  if (list.length === 0) {
+    throw new Error('AmqpModule: at least one broker must be configured');
   }
   const byName = new Map<string, ResolvedBrokerOptions>();
   const order: string[] = [];
-  for (const broker of opts.brokers) {
+  for (const broker of list) {
     if (!broker.name || broker.name.trim().length === 0) {
       throw new Error('AmqpModule: every broker requires a non-empty `name`');
     }
@@ -154,6 +152,7 @@ export function resolveAmqpOptions(opts: AmqpModuleOptions): ResolvedAmqpModuleO
     const resolved: ResolvedBrokerOptions = {
       name: broker.name,
       url: broker.url,
+      enabled: broker.enabled ?? true,
       username: broker.username,
       password: broker.password,
       reconnectLimit: broker.reconnectLimit ?? -1,
@@ -169,7 +168,6 @@ export function resolveAmqpOptions(opts: AmqpModuleOptions): ResolvedAmqpModuleO
     order.push(broker.name);
   }
   return {
-    enabled: opts.enabled ?? true,
     brokers: byName,
     brokerOrder: order,
   };

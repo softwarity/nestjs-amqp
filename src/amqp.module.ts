@@ -5,8 +5,8 @@ import { AmqpDestinations } from './amqp.destinations';
 import {
   AMQP_MODULE_OPTIONS,
   type AmqpModuleAsyncOptions,
-  type AmqpModuleOptions,
   type AmqpOptionsFactory,
+  type BrokerOptions,
   resolveAmqpOptions,
   type ResolvedAmqpModuleOptions,
 } from './amqp.options';
@@ -22,9 +22,10 @@ import { DlqBrowserService } from './dlq-browser.service';
  * use the `@AmqpQueue` / `@AmqpTopic` / `@Consume` / `@Subscribe`
  * decorators and inject {@link AmqpDestinations} without re-importing.
  *
- * The module supports one or several brokers — pass each as an entry of
- * `options.brokers[]`. With a single broker, the `brokerName` argument on
- * decorators and locator methods is optional.
+ * The module supports one or several brokers. Pass a single
+ * {@link BrokerOptions} (the 90% case) or an array of them. With a single
+ * broker, the `brokerName` argument on decorators and locator methods is
+ * optional.
  *
  * `DlqBrowserService` is always provided; import the optional
  * `DlqAdminModule` separately if you also want the HTTP browser API.
@@ -32,7 +33,7 @@ import { DlqBrowserService } from './dlq-browser.service';
 @Global()
 @Module({})
 export class AmqpModule {
-  static forRoot(options: AmqpModuleOptions): DynamicModule {
+  static forRoot(options: BrokerOptions | BrokerOptions[]): DynamicModule {
     const resolved = resolveAmqpOptions(options);
     const optionsProvider: Provider = {
       provide: AMQP_MODULE_OPTIONS,

@@ -1,6 +1,5 @@
 export { AmqpModule } from './amqp.module';
 export {
-  type AmqpModuleOptions,
   type AmqpModuleAsyncOptions,
   type AmqpOptionsFactory,
   type BrokerOptions,

@@ -60,10 +60,7 @@ export class BrokerConnection {
 
   private readonly codec: AmqpBodyCodec;
 
-  constructor(
-    readonly options: ResolvedBrokerOptions,
-    private readonly enabled: boolean,
-  ) {
+  constructor(readonly options: ResolvedBrokerOptions) {
     this.logger = new Logger(`${BrokerConnection.name}:${options.name}`);
     this.codec = options.bodyCodec ?? defaultBodyCodec;
   }
@@ -96,7 +93,7 @@ export class BrokerConnection {
 
   /** Open the connection. Called by `BrokerRegistry.onModuleInit`. */
   start(): void {
-    if (!this.enabled) {
+    if (!this.options.enabled) {
       this.logger.log('AMQP disabled (enabled=false) — broker inactive; send/emit/consumers are no-ops');
       return;
     }
@@ -146,7 +143,7 @@ export class BrokerConnection {
    * `rabbitmq:stream-offset-spec` filter. No effect on classic/quorum queues.
    */
   messages$(address: string, opts: { creditWindow: number; streamOffset?: StreamOffset }): Observable<IncomingMessage> {
-    if (!this.enabled) return EMPTY;
+    if (!this.options.enabled) return EMPTY;
     return new Observable<IncomingMessage>((subscriber) => {
       let receiver: Receiver | undefined;
       const ready = this.connected$.pipe(
@@ -192,7 +189,7 @@ export class BrokerConnection {
    * connection isn't open yet (caller should retry on `connected$`).
    */
   openManualReceiver(address: string): Receiver | undefined {
-    if (!this.enabled) return undefined;
+    if (!this.options.enabled) return undefined;
     const conn = this.connection;
     if (!conn?.is_open()) return undefined;
     return conn.open_receiver({
@@ -214,7 +211,7 @@ export class BrokerConnection {
    * method's.
    */
   publish(address: string, message: Message): boolean {
-    if (!this.enabled) return false;
+    if (!this.options.enabled) return false;
     const conn = this.connection;
     if (!conn?.is_open()) {
       this.logger.warn(`publish to '${address}' dropped — connection not open`);
@@ -226,7 +223,7 @@ export class BrokerConnection {
   }
 
   stop(): void {
-    if (!this.enabled) return;
+    if (!this.options.enabled) return;
     this.logger.log('shutting down');
     this.senders.forEach((sender) => {
       if (sender.is_open()) sender.close();

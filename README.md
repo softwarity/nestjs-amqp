@@ -91,12 +91,10 @@ import { AmqpModule } from '@softwarity/nestjs-amqp';
 @Module({
   imports: [
     AmqpModule.forRoot({
-      brokers: [{
-        name: 'default',
-        url: 'amqp://localhost:5672',
-        username: 'guest',
-        password: 'guest',
-      }],
+      name: 'default',
+      url: 'amqp://localhost:5672',
+      username: 'guest',
+      password: 'guest',
     }),
   ],
 })
@@ -180,7 +178,7 @@ The bootstrap above intentionally skips three optional features. Add them à la 
 |---|---|---|
 | [Request / reply (`send()`)](#request--reply--opt-in) | Wait for a reply Observable — RPC-style. | Declare a stream queue broker-side, add `replyStreamAddress` to the broker config. |
 | [Retry & DLQ](#retry--dlq--opt-in) | Auto-retry on handler error, then route the failed message to a DLQ. | Declare a DLX + DLQ broker-side, set `{ maxDelivery, dlq: true }` on the decorator. |
-| [Multiple brokers](#multi-broker) | Speak to several brokers from one service. | Add more entries to `brokers: [...]`, pass `brokerName` on each decorator. |
+| [Multiple brokers](#multi-broker) | Speak to several brokers from one service. | Pass an array to `forRoot`, pass `brokerName` on each decorator. |
 
 ---
 
@@ -206,12 +204,10 @@ The bootstrap above intentionally skips three optional features. Add them à la 
 
 ```ts
 AmqpModule.forRoot({
-  brokers: [{
-    name: 'default',
-    url: 'amqp://localhost:5672',
-    username: 'guest', password: 'guest',
-    replyStreamAddress: 'my-service.replies',   // ← REQUIRED for send()
-  }],
+  name: 'default',
+  url: 'amqp://localhost:5672',
+  username: 'guest', password: 'guest',
+  replyStreamAddress: 'my-service.replies',   // ← REQUIRED for send()
 });
 ```
 
@@ -294,12 +290,10 @@ Retry and DLQ are off by default (`maxDelivery: 1`, `dlq: false`) — handler er
 
 ```ts
 AmqpModule.forRoot({
-  brokers: [{
-    name: 'default',
-    url: 'amqp://localhost:5672',
-    username: 'guest', password: 'guest',
-    defaultDlqAddress: 'my-service.dlq',
-  }],
+  name: 'default',
+  url: 'amqp://localhost:5672',
+  username: 'guest', password: 'guest',
+  defaultDlqAddress: 'my-service.dlq',
 });
 ```
 
@@ -331,26 +325,25 @@ type RetryPolicy =
 
 # Multi-broker
 
-Add more entries to `brokers: [...]` and pass the broker name on each decorator. Each broker is independent — its own connection, reply stream, DLQ, body codec.
+Pass an array to `forRoot` and pass the broker name on each decorator. Each broker is independent — its own connection, reply stream, DLQ, body codec, enabled flag.
 
 ```ts
-AmqpModule.forRoot({
-  brokers: [
-    {
-      name: 'primary',
-      url: 'amqp://broker-a:5672',
-      username: 'svc', password: '...',
-      replyStreamAddress: 'my-svc.replies',
-      defaultDlqAddress: 'my-svc.dlq',
-    },
-    {
-      name: 'analytics',
-      url: 'amqp://broker-b:5672',
-      username: 'svc', password: '...',
-      // No reply stream / DLQ — analytics is emit-only.
-    },
-  ],
-});
+AmqpModule.forRoot([
+  {
+    name: 'primary',
+    url: 'amqp://broker-a:5672',
+    username: 'svc', password: '...',
+    replyStreamAddress: 'my-svc.replies',
+    defaultDlqAddress: 'my-svc.dlq',
+  },
+  {
+    name: 'analytics',
+    url: 'amqp://broker-b:5672',
+    username: 'svc', password: '...',
+    enabled: false,                       // per-broker kill switch
+    // No reply stream / DLQ — analytics is emit-only.
+  },
+]);
 
 @Injectable()
 export class MixedService {
@@ -425,7 +418,7 @@ export class DynamicPublisher {
 ```ts
 @Module({
   imports: [
-    AmqpModule.forRoot({ brokers: [{ /* ... */ }] }),
+    AmqpModule.forRoot({ name: 'default', url: '...', /* ... */ }),
     DlqAdminModule,   // adds /admin/dlq/... routes
   ],
 })
@@ -450,12 +443,10 @@ Multi-broker variant: `POST /admin/dlq/:broker/sessions { ... }` to scope the op
 ### Serialization / Deserialization — per broker
 
 ```ts
-AmqpModule.forRoot({
-  brokers: [
-    { name: 'primary',   url: '...', /* default JSON codec */ },
-    { name: 'analytics', url: '...', bodyCodec: new MsgpackCodec() },
-  ],
-});
+AmqpModule.forRoot([
+  { name: 'primary',   url: '...', /* default JSON codec */ },
+  { name: 'analytics', url: '...', bodyCodec: new MsgpackCodec() },
+]);
 ```
 
 Default `JsonBodyCodec`:

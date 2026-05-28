@@ -76,20 +76,18 @@ class MsgpackCodec implements AmqpBodyCodec &#123;
   &#125;
 &#125;
 
-AmqpModule.forRoot(&#123;
-  brokers: [
-    &#123;
-      name: 'primary',
-      url: 'amqp://primary',
-      // No bodyCodec → default JSON codec
-    &#125;,
-    &#123;
-      name: 'analytics',
-      url: 'amqp://analytics',
-      bodyCodec: new MsgpackCodec(),    // ← per-broker codec
-    &#125;,
-  ],
-&#125;);</app-code>
+AmqpModule.forRoot([
+  &#123;
+    name: 'primary',
+    url: 'amqp://primary',
+    // No bodyCodec → default JSON codec
+  &#125;,
+  &#123;
+    name: 'analytics',
+    url: 'amqp://analytics',
+    bodyCodec: new MsgpackCodec(),    // ← per-broker codec
+  &#125;,
+]);</app-code>
 
     <h3>Extending the default codec — keep JSON, tweak ObjectId</h3>
 

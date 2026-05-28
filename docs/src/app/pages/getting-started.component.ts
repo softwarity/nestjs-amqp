@@ -81,12 +81,10 @@ import &#123; AmqpModule &#125; from '&#64;softwarity/nestjs-amqp';
 &#64;Module(&#123;
   imports: [
     AmqpModule.forRoot(&#123;
-      brokers: [&#123;
-        name: 'default',
-        url: 'amqp://localhost:5672',
-        username: 'guest',
-        password: 'guest',
-      &#125;],
+      name: 'default',
+      url: 'amqp://localhost:5672',
+      username: 'guest',
+      password: 'guest',
     &#125;),
   ],
 &#125;)
@@ -95,7 +93,8 @@ export class AppModule &#123;&#125;</app-code>
     <p>
       A single broker named <code>default</code>. Because only one broker is configured, the
       <code>brokerName</code> argument is optional on every decorator and on the locator — the library
-      resolves the lone broker automatically.
+      resolves the lone broker automatically. For multi-broker setups, pass an array — see
+      <a routerLink="/multi-broker">Multi-broker</a>.
     </p>
 
     <h3>4. Publish — fire and forget</h3>
@@ -183,7 +182,7 @@ export class OrdersListener &#123;
         <tr>
           <td><a routerLink="/multi-broker">Multiple brokers</a></td>
           <td>Speak to several brokers from one service (e.g. primary + analytics).</td>
-          <td>Add more entries to <code>brokers: [...]</code>, pass <code>brokerName</code> on each decorator.</td>
+          <td>Pass an array to <code>forRoot</code>, pass <code>brokerName</code> on each decorator.</td>
         </tr>
       </tbody>
     </table>

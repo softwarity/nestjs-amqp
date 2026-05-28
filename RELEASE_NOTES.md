@@ -1,10 +1,90 @@
 # Release Notes
 
-## 0.2.2
+## 0.3.1 — Flattened forRoot + per-broker enabled (BREAKING)
+
+Ergonomic follow-up to 0.2.1. Two small but breaking config changes.
+
+### Breaking changes
+
+- **`AmqpModule.forRoot(...)` accepts `BrokerOptions | BrokerOptions[]` directly.** The outer `{ brokers: [...] }` wrapper is gone — pass a single broker as a flat object (the 90% case) or an array for multi-broker. `AmqpModuleOptions` is removed from the public API.
+
+  Before (0.2.1):
+  ```ts
+  AmqpModule.forRoot({
+    brokers: [{
+      name: 'default',
+      url: 'amqp://localhost:5672',
+      username: 'guest',
+      password: 'guest',
+    }],
+  })
+  ```
+  After (0.3.1):
+  ```ts
+  // single broker — flat
+  AmqpModule.forRoot({
+    name: 'default',
+    url: 'amqp://localhost:5672',
+    username: 'guest',
+    password: 'guest',
+  })
+
+  // multi-broker — array
+  AmqpModule.forRoot([
+    { name: 'primary',   url: 'amqp://broker-a', /* ... */ },
+    { name: 'analytics', url: 'amqp://broker-b', /* ... */ },
+  ])
+  ```
+  `forRootAsync` factory and `AmqpOptionsFactory.createAmqpOptions()` return type updated identically — they now return `BrokerOptions | BrokerOptions[]`.
+
+- **`enabled` moved from the root to `BrokerOptions` (per broker).** The global kill switch is gone — each broker has its own `enabled?: boolean` flag (default `true`). Lets you disable a single broker in a multi-broker setup without affecting the others (e.g. analytics offline for maintenance while primary keeps running).
+
+  Before (0.2.1):
+  ```ts
+  AmqpModule.forRoot({ enabled: false, brokers: [{ /* ... */ }] })
+  ```
+  After (0.3.1):
+  ```ts
+  // single broker
+  AmqpModule.forRoot({ name: 'default', url: '...', enabled: false })
+
+  // multi-broker — only one disabled
+  AmqpModule.forRoot([
+    { name: 'primary',   url: '...' },                  // enabled (default)
+    { name: 'analytics', url: '...', enabled: false },  // off
+  ])
+  ```
+
+### Migration guide
+
+Most migrations are a one-line search-replace:
+
+```diff
+ AmqpModule.forRoot({
+-  brokers: [{
+-    name: 'default',
+-    url: 'amqp://localhost:5672',
+-    username: 'guest',
+-    password: 'guest',
+-  }],
++  name: 'default',
++  url: 'amqp://localhost:5672',
++  username: 'guest',
++  password: 'guest',
+ })
+```
+
+If you were using a global `enabled: false`, move it onto each broker (or rely on the per-broker default for finer control).
+
+### Internal changes
+
+- `BrokerConnection` constructor no longer takes a separate `enabled` argument — reads `options.enabled` directly.
+- `BrokerRegistry` boot log now reports enabled vs disabled brokers explicitly.
+- 2 new tests in `amqp.options.spec.ts` cover the single + array input forms.
 
 ---
 
-## 0.2.0 — Multi-broker (BREAKING)
+## 0.2.1 — Multi-broker (BREAKING)
 
 This release introduces first-class **multi-broker** support and refactors the configuration schema accordingly. The change is breaking: every project upgrading from 0.1.x needs to rewrite its `AmqpModule.forRoot(...)` call.
 
