@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.3.3
+
+---
+
 ## 0.3.2 — Name-less single broker (BREAKING)
 
 Type-level ergonomic tightening: `name` is now forbidden in the single-broker form of `forRoot`. It was always irrelevant in single-broker mode (the lone broker is resolved automatically by every decorator and the locator); making it a TypeScript error removes a useless decision from the 90% case.
