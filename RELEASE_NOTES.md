@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.2
+
+---
+
 ## 0.2.0 — Multi-broker (BREAKING)
 
 This release introduces first-class **multi-broker** support and refactors the configuration schema accordingly. The change is breaking: every project upgrading from 0.1.x needs to rewrite its `AmqpModule.forRoot(...)` call.
