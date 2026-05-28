@@ -425,6 +425,82 @@ az servicebus topic subscription create --resource-group $RG \\
       deployments should fail loudly at infra provisioning time (Terraform plan, Helm upgrade,
       definitions import) — not silently at app startup.
     </p>
+
+    <h2>Auto-generated topology manifest — opt-in</h2>
+
+    <p>
+      The library can write <strong>broker-side ready snippets</strong> of the topology your service
+      expects — <strong>one file per supported brand</strong>, all at boot, <strong>without ever
+      connecting to a broker</strong>. Useful when bootstrapping a new service offline, when onboarding
+      an operator, or as a living source of truth in a PR description ("here's what I need declared
+      broker-side").
+    </p>
+
+    <p>Opt in per broker:</p>
+
+    <app-code lang="ts">AmqpModule.forRoot(&#123;
+  url: 'amqp://localhost:5672',
+  username: 'guest', password: 'guest',
+  emitTopologyManifest: true,   // ← enables the manifest
+&#125;);</app-code>
+
+    <p>
+      At <code>onModuleInit</code> (right after the consumer-explorer has wired every
+      <code>&#64;Consume</code> / <code>&#64;Subscribe</code>), the library writes one file per known
+      brand to <code>os.tmpdir() / amqp-topology / &lt;brokerName&gt;.&lt;brand&gt;.&lt;ext&gt;</code>.
+      Each file is a ready-to-merge snippet for its target broker — pick the one matching your stack.
+      Works <strong>even when <code>enabled: false</code> or the broker is unreachable</strong>: the
+      generation is purely static, derived from your decorators and options.
+    </p>
+
+    <app-code lang="text">[AmqpConsumerExplorer] broker 'default': 4 consumer(s)
+[AmqpConsumerExplorer]   - &#64;Consume orders.create -&gt; OrdersListener.onCreate
+[AmqpConsumerExplorer]   - &#64;Consume payments.process -&gt; PaymentListener.onPayment
+[AmqpConsumerExplorer]   - &#64;Consume orders.ship -&gt; OrdersListener.onShip
+[AmqpConsumerExplorer]   - &#64;Subscribe changes.bulletin -&gt; BulletinPublisher.onChanged
+[AmqpConsumerExplorer] broker 'default': topology manifests written:
+[AmqpConsumerExplorer]   - /tmp/amqp-topology/default.rabbitmq.json
+[AmqpConsumerExplorer]   - /tmp/amqp-topology/default.artemis.xml
+[AmqpConsumerExplorer]   - /tmp/amqp-topology/default.azure-service-bus.sh
+[AmqpConsumerExplorer]   - /tmp/amqp-topology/default.qpid.json</app-code>
+
+    <p>What goes into each manifest:</p>
+    <ul>
+      <li>One queue per <code>&#64;Consume(addr)</code> (quorum on RabbitMQ, anycast on Artemis, …)</li>
+      <li>One stream / topic per <code>&#64;Subscribe(addr)</code> (stream on RabbitMQ, multicast on Artemis, topic + sub on Azure SB, …)</li>
+      <li>The <code>replyStreamAddress</code> if declared (used by <code>send()</code>)</li>
+      <li>The <code>defaultDlqAddress</code> and the DLX wiring if any consumer uses <code>dlq: true</code></li>
+    </ul>
+
+    <table>
+      <thead><tr><th>Brand</th><th>Format</th><th>Example file</th></tr></thead>
+      <tbody>
+        <tr><td>RabbitMQ</td><td><code>definitions.json</code> snippet (queues + exchanges + bindings)</td><td><code>default.rabbitmq.json</code></td></tr>
+        <tr><td>Artemis</td><td><code>broker.xml</code> snippet (<code>&lt;addresses&gt;</code> + <code>&lt;address-settings&gt;</code>)</td><td><code>default.artemis.xml</code></td></tr>
+        <tr><td>Azure Service Bus</td><td>bash script with <code>az servicebus</code> commands</td><td><code>default.azure-service-bus.sh</code></td></tr>
+        <tr><td>Qpid Broker-J</td><td><code>config.json</code> snippet</td><td><code>default.qpid.json</code></td></tr>
+      </tbody>
+    </table>
+
+    <p>
+      When the option is <code>false</code> or omitted (the default), the library logs a one-line hint
+      at boot so the feature stays discoverable:
+    </p>
+
+    <app-code lang="text">[AmqpConsumerExplorer] broker 'default': set \`emitTopologyManifest: true\` to get
+       ready-to-merge topology snippets written to os.tmpdir() at boot</app-code>
+
+    <div class="callout">
+      <strong>Side effect.</strong> When enabled, four files are written at every boot. Pick the option
+      per broker — useful to enable in dev only, switch off in prod.
+    </div>
+
+    <div class="callout warn">
+      <strong>Not a runtime declarator.</strong> The manifest is a <em>hint</em> the library writes for
+      you — declaring topology broker-side is still your job (or your IaC's). The manifest is meant to
+      be merged into your existing <code>definitions.json</code> / <code>broker.xml</code> / IaC
+      scripts, not run as-is in prod.
+    </div>
   `,
 })
 export class BrokerTopologyComponent {}

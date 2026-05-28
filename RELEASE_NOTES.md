@@ -1,6 +1,59 @@
 # Release Notes
 
-## 0.3.3
+## 0.3.3 — Auto-generated topology manifest
+
+New opt-in DX feature: the library can emit broker-side ready topology snippets at boot, **one file per supported brand**, for every configured broker. Non-breaking — disabled by default.
+
+### New feature
+
+- **`BrokerOptions.emitTopologyManifest?: boolean`** (default `false`). When `true`, the library writes one file per known brand (RabbitMQ, Artemis, Azure Service Bus, Qpid) to `os.tmpdir() / amqp-topology / <brokerName>.<brand>.<ext>` at `onModuleInit` time. The generation is **purely static** — derived from `@Consume` / `@Subscribe` metadata and broker options. It runs whether or not the broker is connected (and even when `enabled: false`), so a fresh checkout can produce the topology snippets on the very first launch without any broker running.
+
+  ```ts
+  AmqpModule.forRoot({
+    url: 'amqp://localhost:5672',
+    username: 'guest', password: 'guest',
+    emitTopologyManifest: true,
+  });
+  ```
+
+  ```
+  [AmqpConsumerExplorer] broker 'default': 4 consumer(s)
+  [AmqpConsumerExplorer]   - @Consume orders.create -> OrdersListener.onCreate
+  [AmqpConsumerExplorer]   - @Consume payments.process -> PaymentListener.onPayment
+  [AmqpConsumerExplorer]   - @Consume orders.ship -> OrdersListener.onShip
+  [AmqpConsumerExplorer]   - @Subscribe changes.bulletin -> BulletinPublisher.onChanged
+  [AmqpConsumerExplorer] broker 'default': topology manifests written:
+  [AmqpConsumerExplorer]   - /tmp/amqp-topology/default.rabbitmq.json
+  [AmqpConsumerExplorer]   - /tmp/amqp-topology/default.artemis.xml
+  [AmqpConsumerExplorer]   - /tmp/amqp-topology/default.azure-service-bus.sh
+  [AmqpConsumerExplorer]   - /tmp/amqp-topology/default.qpid.json
+  ```
+
+  When the option is `false`/omitted, the explorer logs a one-line discoverability hint per broker at boot pointing to the option — feature stays findable without being intrusive.
+
+  Manifest content per broker:
+  - One queue per `@Consume(addr)` (quorum on RabbitMQ, anycast on Artemis, …)
+  - One stream / topic per `@Subscribe(addr)` (stream on RabbitMQ, multicast on Artemis, topic + subscription on Azure SB, …)
+  - The `replyStreamAddress` if declared (drives the `send()` reply queue)
+  - The `defaultDlqAddress` and full DLX wiring if any consumer uses `dlq: true`
+
+  Supported brands & formats:
+
+  | Brand | Format | Example file |
+  |---|---|---|
+  | RabbitMQ | `definitions.json` snippet (queues + exchanges + bindings) | `main.rabbitmq.json` |
+  | Artemis | `broker.xml` snippet (`<addresses>` + `<address-settings>`) | `main.artemis.xml` |
+  | Azure Service Bus | bash script with `az servicebus` commands | `main.azure-service-bus.sh` |
+  | Qpid Broker-J | `config.json` snippet | `main.qpid.json` |
+
+  Manifest is a **hint** — the library still doesn't declare topology at runtime. Pick the file matching your broker, merge the snippet into your existing `definitions.json` / `broker.xml` / IaC scripts. Don't run it as-is in prod.
+
+### Internal changes
+
+- New `src/topology-manifest.ts` with per-brand generators (`RabbitMqGenerator`, `ArtemisGenerator`, `AzureServiceBusGenerator`, `QpidGenerator`, `GenericGenerator`) and a `writeTopologyManifestForAllBrands` helper.
+- `BrokerConnection` tracks `expectedDestinations` (populated by `AmqpConsumerExplorer.wire`), exposes a `getExpectedDestinations()` snapshot.
+- `AmqpConsumerExplorer.onModuleInit` emits the manifests after wiring — fully decoupled from the broker connection lifecycle.
+- 22 new tests in `test/topology-manifest.spec.ts` covering every generator's output for queues, streams, DLQ wiring, reply stream, and edge cases (empty destinations, no DLX, etc.).
 
 ---
 

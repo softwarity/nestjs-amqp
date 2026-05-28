@@ -7,6 +7,7 @@ import type { AmqpParamMeta, ConsumerMetadata, IncomingMessage, RetryPolicy } fr
 import type { BrokerConnection } from './broker-connection';
 import { BrokerRegistry } from './broker-registry';
 import { AMQP_CONSUMER_METADATA } from './consumers.decorator';
+import { writeTopologyManifestForAllBrands } from './topology-manifest';
 
 /**
  * Walks every provider at module-init time, finds methods carrying
@@ -64,10 +65,42 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
     for (const [brokerName, entries] of perBroker) {
       if (entries.length === 0) {
         this.logger.log(`broker '${brokerName}': no consumers`);
-        continue;
+      } else {
+        this.logger.log(`broker '${brokerName}': ${entries.length} consumer(s)`);
+        for (const entry of entries) this.logger.log(`  - ${entry}`);
       }
-      this.logger.log(`broker '${brokerName}': ${entries.length} consumer(s)`);
-      for (const entry of entries) this.logger.log(`  - ${entry}`);
+      this.handleTopologyManifest(brokerName);
+    }
+  }
+
+  /**
+   * For each broker, either emit the topology manifests (one file per known
+   * brand) when `emitTopologyManifest: true`, or log a one-line discoverability
+   * hint when false/omitted. Runs at boot — does NOT require the broker to be
+   * connected (or even enabled), so the operator gets the snippets on the
+   * very first run, before activating the real broker.
+   */
+  private handleTopologyManifest(brokerName: string): void {
+    const broker = this.registry.getConnection(brokerName);
+    if (!broker.options.emitTopologyManifest) {
+      this.logger.log(
+        `broker '${brokerName}': set \`emitTopologyManifest: true\` to get ready-to-merge topology snippets written to os.tmpdir() at boot`,
+      );
+      return;
+    }
+    try {
+      const paths = writeTopologyManifestForAllBrands({
+        brokerName: broker.options.name,
+        destinations: broker.getExpectedDestinations(),
+        replyStreamAddress: broker.options.replyStreamAddress,
+        defaultDlqAddress: broker.options.defaultDlqAddress,
+      });
+      this.logger.log(`broker '${brokerName}': topology manifests written:`);
+      for (const p of paths) this.logger.log(`  - ${p}`);
+    } catch (err) {
+      this.logger.warn(
+        `broker '${brokerName}': could not write topology manifests: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -110,6 +143,13 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
       `@${decoratorName(meta)} '${meta.address}' -> ${ctor}.${methodName} on broker '${broker.options.name}' ` +
         `(maxDelivery=${meta.options.maxDelivery}, retryPolicy=${describeRetryPolicy(meta.options.retryPolicy)}, dlq=${meta.options.dlq})`,
     );
+    // Register the destination on the broker so the topology manifest, if
+    // enabled, can list it broker-side on first connection_open.
+    broker.registerExpectedDestination({
+      kind: meta.kind === 'consume' ? 'queue' : 'stream',
+      address: meta.address,
+      dlq: meta.options.dlq,
+    });
     const sub = broker
       .messages$(meta.address, { creditWindow: meta.options.maxWindow, streamOffset: meta.options.streamOffset })
       .subscribe({

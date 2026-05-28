@@ -77,6 +77,19 @@ export interface BrokerOptions {
    * speaks msgpack.
    */
   readonly bodyCodec?: AmqpBodyCodec;
+
+  /**
+   * Emit a broker-side topology manifest at boot. On the first
+   * `connection_open`, the library detects the peer's brand and writes a
+   * ready-to-merge snippet to `os.tmpdir()/amqp-topology/<name>.<brand>.<ext>`
+   * listing every queue / stream / DLX / DLQ this service expects to find
+   * broker-side. Format depends on the brand: RabbitMQ JSON, Artemis XML,
+   * Azure SB bash, Qpid JSON, generic text fallback for unknown peers.
+   *
+   * Default `false`. When disabled, the broker logs a one-line hint at boot
+   * so the feature stays discoverable.
+   */
+  readonly emitTopologyManifest?: boolean;
 }
 
 /** Resolved broker options — every default has been filled. Internal use. */
@@ -94,6 +107,7 @@ export interface ResolvedBrokerOptions {
   readonly replyStreamAddress?: string;
   readonly defaultDlqAddress?: string;
   readonly bodyCodec?: AmqpBodyCodec;
+  readonly emitTopologyManifest: boolean;
 }
 
 /** Resolved root options — defaults applied, brokers indexed by name. */
@@ -188,6 +202,7 @@ export function resolveAmqpOptions(opts: SingleBrokerOptions | BrokerOptions[]):
       replyStreamAddress: broker.replyStreamAddress,
       defaultDlqAddress: broker.defaultDlqAddress,
       bodyCodec: broker.bodyCodec,
+      emitTopologyManifest: broker.emitTopologyManifest ?? false,
     };
     byName.set(broker.name, resolved);
     order.push(broker.name);

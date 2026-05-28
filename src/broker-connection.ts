@@ -9,6 +9,7 @@ import type { ResolvedBrokerOptions } from './amqp.options';
 import type { IncomingMessage, StreamOffset } from './amqp.types';
 import { type AmqpBodyCodec, defaultBodyCodec } from './body-codec';
 import { normalizeIncoming, toRheaOutgoing } from './rhea-adapter';
+import type { ExpectedDestination } from './topology-manifest';
 
 /** Brand reported by the peer in its AMQP Open frame `properties.product`
  *  field. Used for diagnostics and to gate broker-specific features
@@ -60,9 +61,27 @@ export class BrokerConnection {
 
   private readonly codec: AmqpBodyCodec;
 
+  /** Destinations this broker is expected to consume from — populated by
+   *  `AmqpConsumerExplorer.wire` for each `@Consume` / `@Subscribe`. Drives
+   *  the topology manifest output. */
+  private readonly expectedDestinations: ExpectedDestination[] = [];
+
   constructor(readonly options: ResolvedBrokerOptions) {
     this.logger = new Logger(`${BrokerConnection.name}:${options.name}`);
     this.codec = options.bodyCodec ?? defaultBodyCodec;
+  }
+
+  /** Register an address the consumer-explorer wired to this broker. Called
+   *  once per `@Consume` / `@Subscribe` at module init, before any connection
+   *  attempt. */
+  registerExpectedDestination(d: ExpectedDestination): void {
+    this.expectedDestinations.push(d);
+  }
+
+  /** Snapshot of the destinations registered so far. Used by the topology
+   *  manifest emitter. */
+  getExpectedDestinations(): ReadonlyArray<ExpectedDestination> {
+    return this.expectedDestinations;
   }
 
   /** Brand detected on the peer's Open frame. `'unknown'` until the first

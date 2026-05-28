@@ -157,6 +157,15 @@ AmqpModule.forRootAsync(&#123;
           <td><code>JsonBodyCodec</code></td>
           <td>Custom wire codec for this broker. See the <a routerLink="/serialization">Serialization</a> page.</td>
         </tr>
+        <tr>
+          <td><code>emitTopologyManifest</code></td>
+          <td><code>false</code></td>
+          <td>When <code>true</code>, the library writes <strong>one file per supported brand</strong>
+            (RabbitMQ JSON, Artemis XML, Azure SB bash, Qpid JSON) to <code>os.tmpdir()</code> at boot
+            — purely static generation, doesn't require the broker to be connected (works even with
+            <code>enabled: false</code>). See <a routerLink="/broker-topology">Broker topology</a> for
+            details on the formats.</td>
+        </tr>
       </tbody>
     </table>
 
