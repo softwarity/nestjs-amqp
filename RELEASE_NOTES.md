@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.3.2
+
+---
+
 ## 0.3.1 — Flattened forRoot + per-broker enabled (BREAKING)
 
 Ergonomic follow-up to 0.2.1. Two small but breaking config changes.
