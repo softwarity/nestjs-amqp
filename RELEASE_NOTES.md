@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.3.5
+
+---
+
 ## 0.3.4 — Topology manifest refinements
 
 Follow-up to the 0.3.3 manifest feature, fixing three sharp edges spotted on the first real-world usage.
