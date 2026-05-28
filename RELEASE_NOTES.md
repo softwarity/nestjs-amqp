@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.3.4
+
+---
+
 ## 0.3.3 — Auto-generated topology manifest
 
 New opt-in DX feature: the library can emit broker-side ready topology snippets at boot, **one file per supported brand**, for every configured broker. Non-breaking — disabled by default.
