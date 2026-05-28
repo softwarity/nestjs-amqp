@@ -18,11 +18,23 @@
 
 .card-header {
   display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.card-header-top {
+  display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 24px;
   flex-wrap: wrap;
   gap: 16px;
+}
+
+.card-header-badges {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .header-left {
@@ -52,15 +64,23 @@
     margin: 0;
     color: var(--text-primary);
   }
+}
 
-  .badges {
-    display: flex;
-    gap: 8px;
-    margin-top: 4px;
-    flex-wrap: wrap;
+.badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
 
-    img {
-      height: 20px;
+  img {
+    height: 20px;
+  }
+
+  a {
+    display: inline-flex;
+
+    &:hover {
+      text-decoration: none;
     }
   }
 }
