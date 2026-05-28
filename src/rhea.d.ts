@@ -1,7 +1,7 @@
 // Minimal ambient declarations for the parts of `rhea` we use.
 // `@types/rhea` does not exist on DefinitelyTyped; rhea-promise has its own
 // typings but is a Promise wrapper (incompatible with our RxJS-only rule).
-// This file covers strictly what `AmqpClient`, `AmqpPublisher` and
+// This file covers strictly what `BrokerConnection`, `BrokerPublisher` and
 // `AmqpConsumerExplorer` call. Anything else stays untyped.
 
 declare module 'rhea' {

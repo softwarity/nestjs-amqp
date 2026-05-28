@@ -30,6 +30,7 @@ export interface HeldMessageDto {
 
 export interface DlqSessionResponseDto {
   token: string;
+  brokerName: string;
   dlqAddress: string;
   openedBy: string;
   openedAt: string;
@@ -45,6 +46,7 @@ export function toSessionDto(session: DlqSession): DlqSessionResponseDto {
   const messages = [...session.messages.values()].sort((a, b) => a.idx - b.idx).map(toHeldMessageDto);
   return {
     token: session.token,
+    brokerName: session.brokerName,
     dlqAddress: session.dlqAddress,
     openedBy: session.openedBy,
     openedAt: session.openedAt.toISOString(),

@@ -26,7 +26,7 @@ import { CodeComponent } from '../code/code.component';
         <tr>
           <td><code>&#64;AmqpAddress()</code></td>
           <td><code>string</code></td>
-          <td>The address the <code>&#64;Subscribe</code> was bound to</td>
+          <td>The address the <code>&#64;Consume</code> was bound to</td>
         </tr>
         <tr>
           <td><code>&#64;AmqpDeliveryCount()</code></td>
@@ -75,7 +75,7 @@ import { CodeComponent } from '../code/code.component';
 
     <p>Decode the body, log the retry count, look up a custom header:</p>
 
-    <app-code lang="ts">&#64;Subscribe('orders.created', &#123; maxDelivery: 3 &#125;)
+    <app-code lang="ts">&#64;Consume('orders.created', &#123; maxDelivery: 3 &#125;)
 onCreated(
   &#64;AmqpBody() order: OrderBody,
   &#64;AmqpDeliveryCount() attempt: number,
@@ -87,7 +87,7 @@ onCreated(
 
     <p>Inspect the full envelope when the granular decorators don't fit:</p>
 
-    <app-code lang="ts">&#64;Subscribe('debug.everything')
+    <app-code lang="ts">&#64;Consume('debug.everything')
 onDebug(&#64;AmqpContext() ctx: AmqpContext): void &#123;
   console.log('address', ctx.address);
   console.log('attempt', ctx.deliveryCount);

@@ -30,11 +30,11 @@ import { CodeComponent } from '../code/code.component';
       </thead>
       <tbody>
         <tr>
-          <td>Each <code>&#64;Subscribe(addr)</code></td>
+          <td>Each <code>&#64;Consume(addr)</code></td>
           <td>A <strong>classic or quorum queue</strong> at <code>addr</code>. Add <code>x-dead-letter-exchange</code> + <code>x-dead-letter-routing-key</code> if you set <code>dlq: true</code>.</td>
         </tr>
         <tr>
-          <td>Each <code>&#64;SubscribeTopic(addr)</code> (RabbitMQ)</td>
+          <td>Each <code>&#64;Subscribe(addr)</code> (RabbitMQ)</td>
           <td>A <strong>stream queue</strong> at <code>addr</code> with an appropriate <code>x-max-age</code>.</td>
         </tr>
         <tr>
@@ -52,7 +52,7 @@ import { CodeComponent } from '../code/code.component';
 
     <p>
       RabbitMQ 4.x is the recommended broker: native AMQP 1.0 (no plugin needed since 4.0), streams
-      (required for <code>&#64;SubscribeTopic</code> and the reply queue), quorum queues, and v2
+      (required for <code>&#64;Subscribe</code> and the reply queue), quorum queues, and v2
       addressing on by default.
     </p>
 
@@ -201,7 +201,8 @@ import { CodeComponent } from '../code/code.component';
     <app-code lang="text">management.load_definitions = /etc/rabbitmq/definitions.json
 
 # AMQP 1.0 is enabled by default in 4.x. v2 addressing (/queues/&lt;name&gt;) is also
-# default. The library's autoPrefixQueues:true handles it automatically.
+# default. The library detects RabbitMQ at the AMQP handshake and prepends
+# /queues/ to bare addresses automatically — no config needed.
 #
 # Optional: tune consumer_timeout to be safely above the DLQ-browser hard TTL.
 consumer_timeout = 1800000   # 30 min (default)</app-code>
@@ -251,8 +252,7 @@ volumes:
 
     <p>
       Artemis speaks AMQP 1.0 natively on port 5672. Topology is declared in <code>broker.xml</code>.
-      Use <code>autoPrefixQueues: false</code> in the module options — Artemis uses bare names, not
-      RabbitMQ's <code>/queues/</code> prefix.
+      The library detects Artemis at the AMQP handshake and uses bare names — no config needed.
     </p>
 
     <h3>broker.xml — addresses, queues, dead-letter</h3>
@@ -319,7 +319,8 @@ volumes:
         instance will receive each reply (no broadcast). For multi-instance services, declare one reply
         queue per instance and pass the right <code>replyStreamAddress</code> per process, OR use a
         multicast address with one subscription per instance.</li>
-      <li><strong>Bare addresses.</strong> Set <code>autoPrefixQueues: false</code>.</li>
+      <li><strong>Bare addresses.</strong> No prefix needed — the library detects Artemis and skips
+        the <code>/queues/</code> prefix automatically.</li>
       <li><strong>DLQ semantics.</strong> Artemis tracks delivery attempts itself
         (<code>max-delivery-attempts</code> on the address-setting). Coordinate this with
         <code>maxDelivery</code> in the consumer options — typically set Artemis to a higher value so
@@ -333,7 +334,7 @@ volumes:
       (queues, topics, subscriptions, sub-queues) are declared via ARM/Bicep, Azure CLI, or the Portal.
     </p>
 
-    <p>Use <code>autoPrefixQueues: false</code>. The connection URL looks like:</p>
+    <p>The connection URL looks like:</p>
 
     <app-code lang="text">amqps://&lt;namespace&gt;.servicebus.windows.net:5671</app-code>
 
@@ -394,11 +395,11 @@ az servicebus topic subscription create --resource-group $RG \\
       Qpid Broker-J speaks AMQP 1.0 natively. Topology lives in
       <code>config.json</code> (or the web console at port 8080 for browse/declare).
       It supports queues and exchanges very similar to RabbitMQ classic queues but lacks streams.
-      Use <code>autoPrefixQueues: false</code>.
+      The library detects Qpid and uses bare names automatically.
     </p>
 
     <p>
-      For <code>&#64;SubscribeTopic</code>-style broadcast and the reply destination, fall back to
+      For <code>&#64;Subscribe</code>-style broadcast and the reply destination, fall back to
       either a per-instance queue + topic exchange binding pattern, or use Apache Pulsar / RabbitMQ if
       stream semantics matter. Qpid is a good fit for pure work-queue workloads.
     </p>

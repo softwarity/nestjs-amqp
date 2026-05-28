@@ -1,5 +1,6 @@
 import type { Observable } from 'rxjs';
-import type { AmqpPublisher } from './amqp.publisher';
+import type { BrokerPublisher } from './broker-publisher';
+import type { BrokerRegistry } from './broker-registry';
 import type { EmitOptions, SendOptions } from './amqp.types';
 
 // ---------------------------------------------------------------------------
@@ -8,9 +9,9 @@ import type { EmitOptions, SendOptions } from './amqp.types';
 // ---------------------------------------------------------------------------
 
 /** Publish handle for a **work-queue** (classic/quorum). Supports both
- *  `send()` (request/reply, waits for the reply on the shared reply stream)
- *  and `emit()` (fire-and-forget). Use for point-to-point messaging where
- *  one message is processed by exactly one consumer.
+ *  `send()` (request/reply, waits for the reply on the broker's shared reply
+ *  stream) and `emit()` (fire-and-forget). Use for point-to-point messaging
+ *  where one message is processed by exactly one consumer.
  *
  *  Generic on the payload type `T` — declare the queue with the event shape
  *  it carries (`AmqpQueue<MyEvent>`) and `emit()` / `send()` are type-checked
@@ -22,8 +23,11 @@ export interface AmqpQueue<T = unknown> {
    *  configured via `defaultSendTimeoutMs`). `TRes` is supplied at the call
    *  site — the queue's static `T` only constrains the request payload. */
   send<TRes>(payload: T, options?: SendOptions): Observable<TRes>;
-  /** Fire-and-forget. Returns `void` synchronously. */
-  emit(payload: T, options?: EmitOptions): void;
+  /** Fire-and-forget. Returns `true` if the message was handed off to the
+   *  sender (broker enabled and connected), `false` if it was dropped
+   *  (broker disabled or not connected) — caller can then fall back to an
+   *  in-process bus, a local outbox, etc. */
+  emit(payload: T, options?: EmitOptions): boolean;
 }
 
 /** Publish handle for a **topic** (stream-backed broadcast). Only exposes
@@ -33,32 +37,36 @@ export interface AmqpQueue<T = unknown> {
  *  Generic on the payload type `T` — same convention as {@link AmqpQueue},
  *  default `unknown` to preserve legacy declarations. */
 export interface AmqpTopic<T = unknown> {
-  /** Fire-and-forget broadcast. All connected `@SubscribeTopic` consumers
-   *  on this address receive the message. Returns `void` synchronously. */
-  emit(payload: T, options?: EmitOptions): void;
+  /** Fire-and-forget broadcast. All connected `@Subscribe` consumers
+   *  on this address receive the message. Returns `true` if the message was
+   *  handed off to the sender (broker enabled and connected), `false` if it
+   *  was dropped (broker disabled or not connected) — caller can then fall
+   *  back to an in-process bus, a local outbox, etc. */
+  emit(payload: T, options?: EmitOptions): boolean;
 }
 
 // ---------------------------------------------------------------------------
-// Internal: registry pattern. `AmqpPublisher.onModuleInit` calls
-// `setAmqpPublisher(this)` so the decorators can resolve the publisher at
-// first property access without going through Nest DI on the property.
+// Internal: registry handoff. `BrokerRegistry` constructor calls
+// `setAmqpBrokerRegistry(this)` so property decorators can resolve the
+// publisher at first property access without going through Nest DI on the
+// property itself.
 // ---------------------------------------------------------------------------
 
-let publisherRef: AmqpPublisher | undefined;
+let registryRef: BrokerRegistry | undefined;
 
-/** Internal — called by `AmqpPublisher` during module init. Not exported via
- *  the module barrel. */
-export function setAmqpPublisher(publisher: AmqpPublisher): void {
-  publisherRef = publisher;
+/** Internal — called by `BrokerRegistry` during construction. Not exported
+ *  via the module barrel. */
+export function setAmqpBrokerRegistry(registry: BrokerRegistry): void {
+  registryRef = registry;
 }
 
 // The bound impls stay non-parametric — the generic `T` is purely a
 // compile-time contract carried by the public interface. At runtime every
-// payload reaches `JSON.stringify` the same way regardless of its declared
-// shape, so erasing `T` here costs nothing and keeps the impl small.
+// payload reaches the codec the same way regardless of its declared shape,
+// so erasing `T` here costs nothing and keeps the impl small.
 class BoundAmqpQueue implements AmqpQueue<unknown> {
   constructor(
-    private readonly publisher: AmqpPublisher,
+    private readonly publisher: BrokerPublisher,
     private readonly address: string,
   ) {}
 
@@ -66,33 +74,33 @@ class BoundAmqpQueue implements AmqpQueue<unknown> {
     return this.publisher.send<TRes>(this.address, payload, options);
   }
 
-  emit(payload: unknown, options?: EmitOptions): void {
-    this.publisher.emit(this.address, payload, options);
+  emit(payload: unknown, options?: EmitOptions): boolean {
+    return this.publisher.emit(this.address, payload, options);
   }
 }
 
 class BoundAmqpTopic implements AmqpTopic<unknown> {
   constructor(
-    private readonly publisher: AmqpPublisher,
+    private readonly publisher: BrokerPublisher,
     private readonly address: string,
   ) {}
 
-  emit(payload: unknown, options?: EmitOptions): void {
-    this.publisher.emit(this.address, payload, options);
+  emit(payload: unknown, options?: EmitOptions): boolean {
+    return this.publisher.emit(this.address, payload, options);
   }
 }
 
-function resolvePublisher(decoratorName: string, address: string): AmqpPublisher {
-  if (publisherRef === undefined) {
+function resolvePublisher(decoratorName: string, address: string, brokerName: string | undefined): BrokerPublisher {
+  if (registryRef === undefined) {
     throw new Error(
-      `@${decoratorName}('${address}'): the AMQP module has not initialised yet - ` +
-        `the publisher singleton is unavailable. This usually means the ` +
+      `@${decoratorName}('${address}'${brokerName ? `, '${brokerName}'` : ''}): the AMQP module has not initialised yet - ` +
+        `the broker registry is unavailable. This usually means the ` +
         `decorated property was accessed from a constructor or another ` +
         `path that runs before NestJS lifecycle hooks. Defer the call to ` +
         `OnModuleInit / OnApplicationBootstrap or to a normal method invocation.`,
     );
   }
-  return publisherRef;
+  return registryRef.resolvePublisher(brokerName);
 }
 
 // ---------------------------------------------------------------------------
@@ -100,29 +108,32 @@ function resolvePublisher(decoratorName: string, address: string): AmqpPublisher
 // ---------------------------------------------------------------------------
 
 /**
- * Inject an {@link AmqpQueue} handle bound to a **work-queue** address.
- * Property decorator. First access reads the publisher singleton from the
- * module registry; subsequent accesses reuse a memoised handle.
+ * Inject an {@link AmqpQueue} handle bound to a **work-queue** address on
+ * the named broker. Property decorator. First access reads the broker
+ * publisher from the registry; subsequent accesses reuse a memoised handle.
+ *
+ * `brokerName` is optional when a single broker is configured — the lone
+ * broker is resolved automatically. With several brokers, omitting
+ * `brokerName` throws at first access.
  *
  * Usage:
  * ```ts
- * @AmqpQueue('orders.create')
+ * @AmqpQueue('orders.create')                  // single-broker setup
  * private readonly orders!: AmqpQueue<OrderBody>;
  *
- * createOrder(body: OrderBody): Observable<OrderConfirmation> {
- *   return this.orders.send<OrderConfirmation>(body, { timeoutMs: 5000 });
- * }
+ * @AmqpQueue('orders.create', 'primary')       // multi-broker setup
+ * private readonly orders!: AmqpQueue<OrderBody>;
  * ```
  *
  * For broadcast / pub-sub semantics, use {@link AmqpTopic} instead.
  */
-export function AmqpQueue(address: string): PropertyDecorator {
+export function AmqpQueue(address: string, brokerName?: string): PropertyDecorator {
   return (target, propertyKey) => {
     Object.defineProperty(target, propertyKey, {
       configurable: true,
       enumerable: true,
       get(this: object): AmqpQueue<unknown> {
-        const handle = new BoundAmqpQueue(resolvePublisher('AmqpQueue', address), address);
+        const handle = new BoundAmqpQueue(resolvePublisher('AmqpQueue', address, brokerName), address);
         Object.defineProperty(this, propertyKey, {
           value: handle,
           configurable: true,
@@ -137,28 +148,28 @@ export function AmqpQueue(address: string): PropertyDecorator {
 
 /**
  * Inject an {@link AmqpTopic} handle bound to a **broadcast** address
- * (stream-backed). Only exposes `emit()` — request/reply doesn't apply to
- * broadcast.
+ * (stream-backed) on the named broker. Only exposes `emit()` — request/reply
+ * doesn't apply to broadcast. Same `brokerName` semantics as
+ * {@link AmqpQueue}.
  *
  * Usage:
  * ```ts
- * @AmqpTopic('changes.bulletin')
+ * @AmqpTopic('changes.bulletin')                  // single-broker setup
  * private readonly changes!: AmqpTopic<BulletinChangedEvent>;
  *
- * notifyChange(event: BulletinChangedEvent): void {
- *   this.changes.emit(event);
- * }
+ * @AmqpTopic('changes.bulletin', 'primary')       // multi-broker setup
+ * private readonly changes!: AmqpTopic<BulletinChangedEvent>;
  * ```
  *
  * For work-queue semantics, use {@link AmqpQueue} instead.
  */
-export function AmqpTopic(address: string): PropertyDecorator {
+export function AmqpTopic(address: string, brokerName?: string): PropertyDecorator {
   return (target, propertyKey) => {
     Object.defineProperty(target, propertyKey, {
       configurable: true,
       enumerable: true,
       get(this: object): AmqpTopic<unknown> {
-        const handle = new BoundAmqpTopic(resolvePublisher('AmqpTopic', address), address);
+        const handle = new BoundAmqpTopic(resolvePublisher('AmqpTopic', address, brokerName), address);
         Object.defineProperty(this, propertyKey, {
           value: handle,
           configurable: true,

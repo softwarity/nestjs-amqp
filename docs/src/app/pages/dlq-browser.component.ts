@@ -1,22 +1,29 @@
 import { Component } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { CodeComponent } from '../code/code.component';
 
 @Component({
   selector: 'app-dlq-browser',
-  imports: [CodeComponent],
+  imports: [CodeComponent, RouterLink],
   template: `
     <h2>DLQ browser</h2>
 
     <p>
-      A stateful API to <strong>browse, replay, or drop</strong> dead-lettered messages. Backed by AMQP
-      1.0 manual credit + <code>release()</code> semantics — <strong>no broker Management API
-      call</strong>. Two pieces:
+      A stateful API to <strong>browse, replay, or drop</strong> dead-lettered messages from a DLQ.
+      Backed by AMQP 1.0 manual credit + <code>release()</code> semantics —
+      <strong>no broker Management API call</strong>. Each session is bound to one broker (the broker
+      whose DLQ is being browsed); cross-broker replay is not supported. Two pieces:
     </p>
 
     <ul>
       <li><code>DlqBrowserService</code> — programmatic API, always provided by <code>AmqpModule</code></li>
       <li><code>DlqAdminModule</code> — opt-in HTTP controller exposing the service over REST</li>
     </ul>
+
+    <p>
+      This page is about <em>browsing</em> the DLQ — for the upstream story (how messages end up there in
+      the first place), see <a routerLink="/retry-and-dlq">Retry &amp; DLQ</a>.
+    </p>
 
     <h3>Programmatic use</h3>
 
@@ -27,23 +34,29 @@ import &#123; DlqBrowserService &#125; from '&#64;softwarity/nestjs-amqp';
 export class AdminService &#123;
   constructor(private readonly browser: DlqBrowserService) &#123;&#125;
 
+  // Single-broker: brokerName omitted, defaults to the lone broker
   inspect(addr: string) &#123;
     return this.browser.openSession(addr, 50, 'cli-user');
   &#125;
+
+  // Multi-broker: pass the brokerName explicitly
+  inspectAnalytics(addr: string) &#123;
+    return this.browser.openSession(addr, 50, 'cli-user', 'analytics');
+  &#125;
 &#125;</app-code>
 
-    <p>The browser exposes 5 methods, all returning Observables:</p>
+    <p>The browser exposes 6 methods, all returning Observables:</p>
 
     <table>
       <thead><tr><th>Method</th><th>Effect</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>openSession(addr, pageSize, openedBy)</code></td>
-          <td>Open a manual receiver, add <code>pageSize</code> credits, drain. Returns the populated session.</td>
+          <td><code>openSession(addr, pageSize, openedBy, brokerName?)</code></td>
+          <td>Open a manual receiver on the broker, add <code>pageSize</code> credits, drain. Returns the populated session.</td>
         </tr>
         <tr>
           <td><code>get(token)</code></td>
-          <td>Read current session state (held messages).</td>
+          <td>Read current session state (held messages, broker name).</td>
         </tr>
         <tr>
           <td><code>loadNextPage(token)</code></td>
@@ -51,7 +64,7 @@ export class AdminService &#123;
         </tr>
         <tr>
           <td><code>replay(token, idx)</code></td>
-          <td>Publish a copy to <code>xDeath[0].queue</code>, accept the original.</td>
+          <td>Publish a copy to <code>xDeath[0].queue</code> on the session's broker, accept the original.</td>
         </tr>
         <tr>
           <td><code>drop(token, idx)</code></td>
@@ -70,13 +83,18 @@ export class AdminService &#123;
 
     <app-code lang="ts">&#64;Module(&#123;
   imports: [
-    AmqpModule.forRoot(&#123; appName: 'my-svc' &#125;),
+    AmqpModule.forRoot(&#123; brokers: [&#123; name: 'primary', url: 'amqp://...', /* ... */ &#125;] &#125;),
     DlqAdminModule,
   ],
 &#125;)
 export class AppModule &#123;&#125;</app-code>
 
-    <p>Exposed routes:</p>
+    <h4>Routes — single-broker shortcut</h4>
+
+    <p>
+      When you only have one broker, use the shortcut path — no broker name in the URL. The default
+      broker (first <code>brokers[]</code> entry) is used automatically.
+    </p>
 
     <app-code lang="text">POST /admin/dlq/sessions                              &#123; dlqAddress, pageSize? &#125;
 GET  /admin/dlq/sessions/:token
@@ -84,6 +102,26 @@ POST /admin/dlq/sessions/:token/next-page
 POST /admin/dlq/sessions/:token/messages/:idx/replay
 POST /admin/dlq/sessions/:token/messages/:idx/drop
 POST /admin/dlq/sessions/:token/close</app-code>
+
+    <h4>Routes — multi-broker explicit</h4>
+
+    <p>
+      With several brokers, prefix the open-session URL with the broker name. The other routes use the
+      session token, which already knows its broker, so they don't need the broker in the path.
+    </p>
+
+    <app-code lang="text">POST /admin/dlq/:broker/sessions                     &#123; dlqAddress, pageSize? &#125;
+GET  /admin/dlq/sessions/:token
+POST /admin/dlq/sessions/:token/next-page
+POST /admin/dlq/sessions/:token/messages/:idx/replay
+POST /admin/dlq/sessions/:token/messages/:idx/drop
+POST /admin/dlq/sessions/:token/close</app-code>
+
+    <p>
+      Unknown broker name in the path → <code>400 Bad Request</code> with the list of valid names.
+      <code>POST /admin/dlq/sessions</code> in a multi-broker setup defaults to the first broker — a
+      convenience for the most common operator workflow.
+    </p>
 
     <div class="callout danger">
       <strong>⚠ Auth is NOT included.</strong> The controller is unguarded by design — the library has no
@@ -96,14 +134,17 @@ POST /admin/dlq/sessions/:token/close</app-code>
 
     <h3>Workflow</h3>
 
-    <app-code lang="text">1. POST /admin/dlq/sessions  &#123; dlqAddress: 'orders.dlq', pageSize: 20 &#125;
-     -&gt; backend opens manual receiver, adds 20 credits, drains, returns
-        &#123; token, messages: [ &#123; idx, body, properties, xDeath, … &#125;, … ] &#125;
+    <app-code lang="text">1. POST /admin/dlq/primary/sessions  &#123; dlqAddress: 'my-svc.dlq', pageSize: 20 &#125;
+     -&gt; backend opens manual receiver on broker 'primary', adds 20 credits,
+        drains, returns
+        &#123; token, brokerName: 'primary',
+          messages: [ &#123; idx, body, properties, xDeath, … &#125;, … ] &#125;
      -&gt; messages are held un-settled on the broker
 
-2. User picks msg[3] -&gt; POST .../messages/3/replay
-     -&gt; backend reads xDeath[0].queue (origin), publishes a copy there,
-        accept() the original -&gt; message gone from orders.dlq
+2. User picks msg[3] -&gt; POST /admin/dlq/sessions/&lt;token&gt;/messages/3/replay
+     -&gt; backend reads xDeath[0].queue (origin), publishes a copy there
+        on broker 'primary', accept() the original
+     -&gt; message gone from my-svc.dlq
      -&gt; session.messages[3] removed, lastActivityAt refreshed
 
 3. User picks msg[5] -&gt; POST .../messages/5/drop

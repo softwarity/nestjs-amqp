@@ -13,7 +13,7 @@ export class AmqpConnectionError extends AmqpError {
   }
 }
 
-/** `AmqpPublisher.send()` waited longer than `timeoutMs` for a reply. */
+/** A publisher's `send()` waited longer than `timeoutMs` for a reply. */
 export class AmqpTimeoutError extends AmqpError {
   constructor(
     readonly address: string,
@@ -24,7 +24,7 @@ export class AmqpTimeoutError extends AmqpError {
   }
 }
 
-/** A `@Subscribe` handler threw or its Observable errored. Wraps the original. */
+/** A `@Consume` handler threw or its Observable errored. Wraps the original. */
 export class AmqpHandlerError extends AmqpError {
   constructor(
     readonly address: string,

@@ -6,14 +6,15 @@ import { CodeComponent } from '../code/code.component';
   selector: 'app-getting-started',
   imports: [CodeComponent, RouterLink],
   template: `
-    <h2>Getting started</h2>
+    <h2>Getting started — the 90% case</h2>
 
     <p>
       <strong>&#64;softwarity/nestjs-amqp</strong> wraps the canonical
       <a href="https://github.com/amqp/rhea" target="_blank" rel="noopener">rhea</a> AMQP 1.0 client behind a
-      decorator-based NestJS API. You declare queues and topics, annotate methods with
-      <code>&#64;Subscribe</code> / <code>&#64;SubscribeTopic</code>, and the library handles connection,
-      reconnect, settle policy, retries, DLQ routing, and reply correlation for you.
+      decorator-based NestJS API. This page shows the simplest, most common setup: <strong>one broker,
+      fire-and-forget publish, basic consume — no DLQ, no request/reply</strong>. Declare as many queues
+      and topics as you need; the simplicity here is about the feature surface, not the quantity.
+      Reply/DLQ are opt-in features documented on their own pages.
     </p>
 
     <div class="callout">
@@ -29,103 +30,170 @@ import { CodeComponent } from '../code/code.component';
       <li>Brokers: RabbitMQ 4.x, ActiveMQ Artemis, Apache Qpid, Azure Service Bus</li>
     </ul>
 
-    <h3>Installation</h3>
+    <h3>1. Install</h3>
     <app-code lang="bash">npm install &#64;softwarity/nestjs-amqp rhea</app-code>
-
     <p>Peer deps you most likely already have:</p>
     <app-code lang="bash">npm install &#64;nestjs/common &#64;nestjs/core rxjs reflect-metadata</app-code>
 
-    <h3>Register the module</h3>
+    <h3>2. Declare your queues and topics broker-side</h3>
+    <p>
+      The library never declares topology at runtime — it only opens senders and receivers on destinations
+      that <strong>already exist</strong>. Declare whatever your service needs (one queue, ten queues,
+      mixed work-queues and broadcast streams — same exercise). With RabbitMQ 4.x via
+      <code>definitions.json</code>:
+    </p>
+    <app-code lang="json">&#123;
+  "queues": [
+    &#123;
+      "name": "orders.create",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": &#123; "x-queue-type": "quorum" &#125;
+    &#125;,
+    &#123;
+      "name": "orders.ship",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": &#123; "x-queue-type": "quorum" &#125;
+    &#125;,
+    &#123;
+      "name": "changes.bulletin",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": &#123; "x-queue-type": "stream", "x-max-age": "1h" &#125;
+    &#125;
+  ]
+&#125;</app-code>
+    <p>
+      Quorum queues for work-queue semantics (one consumer per message), stream queues for broadcast
+      semantics (every consumer sees every message). The library makes no assumption about how many you
+      declare. Full topology examples for every supported broker on the
+      <a routerLink="/broker-topology">Broker topology</a> page.
+    </p>
 
+    <h3>3. Register the module</h3>
     <app-code lang="ts">import &#123; Module &#125; from '&#64;nestjs/common';
 import &#123; AmqpModule &#125; from '&#64;softwarity/nestjs-amqp';
 
 &#64;Module(&#123;
   imports: [
     AmqpModule.forRoot(&#123;
-      appName: 'my-service',
-      url: 'amqp://localhost:5672',
-      username: 'guest',
-      password: 'guest',
+      brokers: [&#123;
+        name: 'default',
+        url: 'amqp://localhost:5672',
+        username: 'guest',
+        password: 'guest',
+      &#125;],
     &#125;),
   ],
 &#125;)
 export class AppModule &#123;&#125;</app-code>
 
     <p>
-      <code>appName</code> drives sensible defaults: the shared reply stream becomes
-      <code>my-service.replies</code>, the default DLQ address becomes <code>my-service.dlq</code>, and the
-      AMQP container ID identifies your service on the broker. All three can be overridden in the options.
+      A single broker named <code>default</code>. Because only one broker is configured, the
+      <code>brokerName</code> argument is optional on every decorator and on the locator — the library
+      resolves the lone broker automatically.
     </p>
 
-    <h3>Publish</h3>
+    <h3>4. Publish — fire and forget</h3>
 
     <app-code lang="ts">import &#123; Injectable &#125; from '&#64;nestjs/common';
-import &#123; AmqpQueue &#125; from '&#64;softwarity/nestjs-amqp';
+import &#123; AmqpQueue, AmqpTopic &#125; from '&#64;softwarity/nestjs-amqp';
 
 &#64;Injectable()
 export class OrdersService &#123;
-  // Generic on the payload type: emit/send are checked at every call site.
   &#64;AmqpQueue('orders.create')
-  private readonly orders!: AmqpQueue&lt;OrderBody&gt;;
+  private readonly create!: AmqpQueue&lt;OrderBody&gt;;
 
-  create(body: OrderBody): void &#123;
-    this.orders.emit(body);                        // fire-and-forget
+  &#64;AmqpQueue('orders.ship')
+  private readonly ship!: AmqpQueue&lt;OrderShipped&gt;;
+
+  &#64;AmqpTopic('changes.bulletin')
+  private readonly changes!: AmqpTopic&lt;BulletinChange&gt;;
+
+  newOrder(body: OrderBody): void &#123;
+    this.create.emit(body);                       // fire-and-forget
   &#125;
 
-  confirm(body: OrderBody): Observable&lt;Confirmation&gt; &#123;
-    return this.orders.send&lt;Confirmation&gt;(body);  // request/reply
+  notifyShipped(body: OrderShipped): void &#123;
+    this.ship.emit(body);
+    this.changes.emit(&#123; type: 'shipped', orderId: body.id, when: new Date().toISOString() &#125;);
   &#125;
 &#125;</app-code>
 
-    <h3>Consume</h3>
+    <p>
+      <code>&#64;AmqpQueue</code> for work-queues (point-to-point) and <code>&#64;AmqpTopic</code> for
+      broadcast. <code>emit()</code> returns synchronously a <code>boolean</code> — <code>true</code> if
+      the message was handed off to the sender, <code>false</code> if the broker is disabled or not
+      connected (caller can then fall back to an in-process bus, a local outbox, etc. — see the
+      <a routerLink="/publishers">Publishers</a> page for the pattern). Each handle is generic on the
+      payload type — every call site is type-checked at compile time.
+    </p>
+
+    <h3>5. Consume</h3>
 
     <app-code lang="ts">import &#123; Injectable &#125; from '&#64;nestjs/common';
-import &#123; Subscribe &#125; from '&#64;softwarity/nestjs-amqp';
+import &#123; Consume, Subscribe &#125; from '&#64;softwarity/nestjs-amqp';
 
 &#64;Injectable()
 export class OrdersListener &#123;
-  // Single argument with no decorator -> implicitly bound to the
-  // JSON-decoded message body. Use &#64;AmqpBody() if you prefer explicit.
-  &#64;Subscribe('orders.create')
+  // The single un-annotated argument is bound to the JSON-decoded body.
+  // Equivalent to writing &#64;AmqpBody() explicitly.
+  &#64;Consume('orders.create')
   onCreate(order: OrderBody): void &#123;
     this.svc.handle(order);
   &#125;
+
+  &#64;Consume('orders.ship')
+  onShip(shipped: OrderShipped): void &#123;
+    this.svc.markShipped(shipped);
+  &#125;
+
+  &#64;Subscribe('changes.bulletin')
+  onChange(change: BulletinChange): void &#123;
+    this.realtime.publish(change);
+  &#125;
 &#125;</app-code>
 
-    <div class="callout">
-      Use the sidebar to navigate to <strong>Configuration</strong>, <strong>Publishers</strong>,
-      <strong>Consumers</strong>, <strong>Parameter decorators</strong>, <strong>Wire codec</strong>,
-      <strong>DLQ browser</strong>, and <strong>Errors &amp; lifecycle</strong>.
-    </div>
-
-    <h3>Topology must exist before the app starts</h3>
-
-    <div class="callout danger">
-      <strong>⚠ Read this before your first deploy.</strong> This library opens senders and receivers on
-      destinations that <em>must already exist</em> on the broker. It does NOT create queues, streams, or
-      exchanges at runtime — and never calls the broker Management API. Missing topology = silent
-      failure (the AMQP link is rejected with <code>amqp:not-found</code>; the rest of the connection
-      stays up). Declare everything broker-side via a definitions file or an IaC script.
-    </div>
-
     <p>
-      Minimum recommended topology for full feature use:
+      Start the app — you'll see a boot log section like
+      <code>broker 'default': 3 consumer(s)</code> followed by one line per binding (each tagged
+      <code>&#64;Consume</code> or <code>&#64;Subscribe</code>). You're
+      done.
     </p>
-    <ul>
-      <li>Quorum or classic queues for each <code>&#64;Subscribe</code> address, with a DLX + DLQ
-        binding if you set <code>dlq: true</code>.</li>
-      <li>A <strong>stream queue</strong> for the shared reply destination (default
-        <code>&lt;appName&gt;.replies</code>) — required as soon as you call <code>send()</code>.</li>
-      <li>One <strong>stream queue</strong> per <code>&#64;SubscribeTopic</code> broadcast address.</li>
-      <li>One catch-all DLQ (typically quorum) bound to the DLX.</li>
-    </ul>
 
+    <h3>What's NOT in the 90% case</h3>
+    <p>The bootstrap above intentionally skips three optional features. Add them à la carte as needed:</p>
+    <table>
+      <thead><tr><th>Feature</th><th>What you gain</th><th>What you have to do</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><a routerLink="/request-reply">Request / reply (<code>send()</code>)</a></td>
+          <td>Wait for a reply Observable on a published message — RPC-style.</td>
+          <td>Declare a stream queue broker-side, add <code>replyStreamAddress</code> to the broker config.</td>
+        </tr>
+        <tr>
+          <td><a routerLink="/retry-and-dlq">Retry &amp; DLQ</a></td>
+          <td>Auto-retry on handler error, then route the failed message to a DLQ for human inspection.</td>
+          <td>Declare a DLX + DLQ broker-side, set <code>&#123; maxDelivery, dlq: true &#125;</code> on the decorator.</td>
+        </tr>
+        <tr>
+          <td><a routerLink="/multi-broker">Multiple brokers</a></td>
+          <td>Speak to several brokers from one service (e.g. primary + analytics).</td>
+          <td>Add more entries to <code>brokers: [...]</code>, pass <code>brokerName</code> on each decorator.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>What's next</h3>
     <p>
-      Full topology examples for <strong>RabbitMQ 4.x</strong> (definitions.json + docker-compose),
-      <strong>ActiveMQ Artemis</strong> (broker.xml), <strong>Azure Service Bus</strong> (Azure CLI),
-      and <strong>Apache Qpid</strong> live on the
-      <a routerLink="/broker-topology">Broker topology</a> page.
+      Read <a routerLink="/configuration">Configuration</a> for the full option reference,
+      <a routerLink="/publishers">Publishers</a> and <a routerLink="/consumers">Consumers</a> for the
+      decorator details, or <a routerLink="/broker-topology">Broker topology</a> for full IaC examples on
+      RabbitMQ 4.x, Artemis, Azure Service Bus, and Qpid.
     </p>
   `,
 })

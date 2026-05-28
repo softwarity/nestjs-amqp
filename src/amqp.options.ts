@@ -4,33 +4,39 @@ import type { AmqpBodyCodec } from './body-codec';
 /**
  * Static configuration passed to `AmqpModule.forRoot(...)`.
  *
- * Broker connection settings + library behaviour. Defaults are conservative:
- * if you don't set anything, the module assumes `amqp://localhost:5672` with
- * no auth, infinite reconnects, and `<appName>.replies` as the shared reply
- * stream.
+ * The module supports one OR several brokers — declared as an array of
+ * {@link BrokerOptions}. Each broker is independent: its own connection,
+ * its own reply stream, its own DLQ, its own body codec, its own retry
+ * timings. Decorators reference brokers by their `name`.
  *
- * `appName` is mandatory unless you pass `replyStreamAddress` explicitly: it
- * drives both the AMQP container ID (so the broker sees a stable identity)
- * and the default reply-stream / dlq names.
+ * If you only have one broker, the `brokerName` argument on
+ * `@AmqpQueue` / `@AmqpTopic` / `@Consume` / `@Subscribe` is
+ * optional — the lone broker is resolved automatically.
  */
 export interface AmqpModuleOptions {
-  /**
-   * Logical name of the host application — used as the default for
-   * `replyStreamAddress` (`${appName}.replies`) and
-   * `defaultDlqAddress` (`${appName}.dlq`), and as the AMQP container ID.
-   *
-   * Required unless every default that depends on it is overridden.
-   */
-  readonly appName?: string;
+  /** Brokers to connect to. Must contain at least one entry; names must be
+   *  unique. */
+  readonly brokers: BrokerOptions[];
 
-  /** Master switch. `false` → the module loads but is inactive (no
-   *  connection, `@Subscribe` not wired, `send()` errors, `emit()` is a
-   *  silent no-op). Useful for local dev without a running broker.
-   *  Default: `true`. */
+  /** Global kill switch. `false` → the module loads but every broker is
+   *  inactive (no connection, consumers not wired, `send()` errors,
+   *  `emit()` is a silent no-op). Useful for local dev without a running
+   *  broker. Default: `true`. */
   readonly enabled?: boolean;
+}
 
-  /** Broker URL (`amqp://` or `amqps://`). Default `amqp://localhost:5672`. */
-  readonly url?: string;
+/**
+ * Per-broker connection settings + library behaviour. All fields except
+ * `name` and `url` are optional. Conservative defaults: infinite reconnects,
+ * 60s idle timeout, 30s send timeout, JSON body codec.
+ */
+export interface BrokerOptions {
+  /** Unique logical identifier referenced by decorators and the DLQ admin
+   *  path. Required, non-empty, must be unique across all brokers. */
+  readonly name: string;
+
+  /** Broker URL (`amqp://` or `amqps://`). Required. */
+  readonly url: string;
 
   /** SASL PLAIN username. */
   readonly username?: string;
@@ -54,39 +60,36 @@ export interface AmqpModuleOptions {
   readonly defaultSendTimeoutMs?: number;
 
   /**
-   * Address of the shared reply stream used by request/reply (`send()`).
-   * Default: `${appName}.replies`. **Must be pre-declared broker-side as a
-   * stream queue.** If neither this nor `appName` is provided, `send()` is
-   * unavailable and throws `AmqpConnectionError`.
+   * Address of the shared reply stream used by request/reply (`send()`) on
+   * this broker. **Must be pre-declared broker-side as a stream queue.**
+   * Optional — if absent, `send()` on this broker throws
+   * `AmqpConnectionError` (only `emit()` and consumers remain available).
    */
   readonly replyStreamAddress?: string;
 
   /**
-   * Default DLQ address used by the optional `DlqBrowserService` when no
-   * address is given at the call site. Default: `${appName}.dlq`.
+   * Default DLQ address — used by the optional `DlqBrowserService` to
+   * pre-fill the admin UI and as a convention indicator at boot. The
+   * consumer never publishes to this address itself: when a `@Consume`
+   * with `{ dlq: true }` exhausts its retries the lib calls
+   * `delivery.reject()` and the broker routes via its own DLX configuration.
+   * Optional — declare it only if you've set up a DLQ broker-side.
    */
   readonly defaultDlqAddress?: string;
 
   /**
-   * Whether to auto-prefix bare addresses with `/queues/` (RabbitMQ 4.x v2
-   * addressing). Already-prefixed addresses (`/queues/...`, `/exchanges/...`,
-   * `/topic/...`) always pass through unchanged. Set to `false` for brokers
-   * that accept bare names (Artemis, Qpid, Azure SB). Default `true`.
-   */
-  readonly autoPrefixQueues?: boolean;
-
-  /**
-   * Custom wire codec. Default: JSON with `Date` round-trip and ObjectId
-   * duck-typing on encode. Provide your own implementation for msgpack,
-   * protobuf, mongoose ObjectId rehydration, etc.
+   * Custom wire codec for messages on this broker. Default: JSON with `Date`
+   * round-trip and ObjectId duck-typing on encode. Provide your own
+   * implementation for msgpack, protobuf, mongoose ObjectId rehydration, etc.
+   * Per-broker so a primary broker can speak JSON while an analytics broker
+   * speaks msgpack.
    */
   readonly bodyCodec?: AmqpBodyCodec;
 }
 
-/** Resolved options — every default has been filled. Internal use. */
-export interface ResolvedAmqpModuleOptions {
-  readonly appName: string;
-  readonly enabled: boolean;
+/** Resolved broker options — every default has been filled. Internal use. */
+export interface ResolvedBrokerOptions {
+  readonly name: string;
   readonly url: string;
   readonly username?: string;
   readonly password?: string;
@@ -97,8 +100,16 @@ export interface ResolvedAmqpModuleOptions {
   readonly defaultSendTimeoutMs: number;
   readonly replyStreamAddress?: string;
   readonly defaultDlqAddress?: string;
-  readonly autoPrefixQueues: boolean;
   readonly bodyCodec?: AmqpBodyCodec;
+}
+
+/** Resolved root options — defaults applied, brokers indexed by name. */
+export interface ResolvedAmqpModuleOptions {
+  readonly enabled: boolean;
+  readonly brokers: ReadonlyMap<string, ResolvedBrokerOptions>;
+  /** Insertion order preserved — index 0 is the "first" broker, used as the
+   *  default by single-broker decorators and by the DLQ admin URL fallback. */
+  readonly brokerOrder: ReadonlyArray<string>;
 }
 
 /** Factory contract for `AmqpModule.forRootAsync({ useClass })`. */
@@ -115,32 +126,51 @@ export interface AmqpModuleAsyncOptions extends Pick<ModuleMetadata, 'imports'> 
   readonly inject?: any[];
 }
 
-/** Injection token for the resolved options. */
+/** Injection token for the resolved root options. */
 export const AMQP_MODULE_OPTIONS = Symbol('AMQP_MODULE_OPTIONS');
 
 /**
- * Apply defaults. Validates the minimum required: if neither `appName` nor
- * `replyStreamAddress` is given, request/reply is disabled (caller can still
- * use `emit()` and `@Subscribe`).
+ * Apply defaults and validate. Throws if:
+ *   - `brokers` is missing or empty
+ *   - any broker has an empty `name` or `url`
+ *   - two brokers share the same `name`
  */
 export function resolveAmqpOptions(opts: AmqpModuleOptions): ResolvedAmqpModuleOptions {
-  const appName = opts.appName ?? '';
-  const replyStreamAddress = opts.replyStreamAddress ?? (appName ? `${appName}.replies` : undefined);
-  const defaultDlqAddress = opts.defaultDlqAddress ?? (appName ? `${appName}.dlq` : undefined);
+  if (!opts.brokers || opts.brokers.length === 0) {
+    throw new Error('AmqpModule: `brokers` is required and must contain at least one entry');
+  }
+  const byName = new Map<string, ResolvedBrokerOptions>();
+  const order: string[] = [];
+  for (const broker of opts.brokers) {
+    if (!broker.name || broker.name.trim().length === 0) {
+      throw new Error('AmqpModule: every broker requires a non-empty `name`');
+    }
+    if (!broker.url || broker.url.trim().length === 0) {
+      throw new Error(`AmqpModule: broker '${broker.name}' requires a non-empty \`url\``);
+    }
+    if (byName.has(broker.name)) {
+      throw new Error(`AmqpModule: duplicate broker name '${broker.name}' — names must be unique`);
+    }
+    const resolved: ResolvedBrokerOptions = {
+      name: broker.name,
+      url: broker.url,
+      username: broker.username,
+      password: broker.password,
+      reconnectLimit: broker.reconnectLimit ?? -1,
+      initialReconnectDelayMs: broker.initialReconnectDelayMs ?? 100,
+      maxReconnectDelayMs: broker.maxReconnectDelayMs ?? 30000,
+      idleTimeoutMs: broker.idleTimeoutMs ?? 60000,
+      defaultSendTimeoutMs: broker.defaultSendTimeoutMs ?? 30000,
+      replyStreamAddress: broker.replyStreamAddress,
+      defaultDlqAddress: broker.defaultDlqAddress,
+      bodyCodec: broker.bodyCodec,
+    };
+    byName.set(broker.name, resolved);
+    order.push(broker.name);
+  }
   return {
-    appName,
     enabled: opts.enabled ?? true,
-    url: opts.url ?? 'amqp://localhost:5672',
-    username: opts.username,
-    password: opts.password,
-    reconnectLimit: opts.reconnectLimit ?? -1,
-    initialReconnectDelayMs: opts.initialReconnectDelayMs ?? 100,
-    maxReconnectDelayMs: opts.maxReconnectDelayMs ?? 30000,
-    idleTimeoutMs: opts.idleTimeoutMs ?? 60000,
-    defaultSendTimeoutMs: opts.defaultSendTimeoutMs ?? 30000,
-    replyStreamAddress,
-    defaultDlqAddress,
-    autoPrefixQueues: opts.autoPrefixQueues ?? true,
-    bodyCodec: opts.bodyCodec,
+    brokers: byName,
+    brokerOrder: order,
   };
 }

@@ -9,22 +9,52 @@ import { CodeComponent } from '../code/code.component';
     <h2>Configuration</h2>
 
     <p>
-      The module accepts options either statically (<code>forRoot</code>) or asynchronously
-      (<code>forRootAsync</code>, with a factory pulling from <code>ConfigService</code> or any other
-      source). Every option has a sane default; you can call <code>AmqpModule.forRoot()</code> with no
-      argument and get a working module pointed at <code>amqp://localhost:5672</code>.
+      The module takes a list of brokers and a few global switches. Every broker is independent: its own
+      connection, its own reply stream, its own DLQ, its own body codec. Pass the options either
+      statically (<code>forRoot</code>) or asynchronously (<code>forRootAsync</code>, with a factory
+      pulling from <code>ConfigService</code> or any other source).
     </p>
 
-    <h3>forRoot — static options</h3>
+    <h3>forRoot — minimal (single broker)</h3>
 
     <app-code lang="ts">AmqpModule.forRoot(&#123;
-  appName: 'my-service',
-  url: 'amqp://localhost:5672',
-  username: 'guest',
-  password: 'guest',
-  reconnectLimit: -1,            // infinite
-  idleTimeoutMs: 60_000,
-  defaultSendTimeoutMs: 30_000,
+  brokers: [&#123;
+    name: 'default',
+    url: 'amqp://localhost:5672',
+    username: 'guest',
+    password: 'guest',
+  &#125;],
+&#125;)</app-code>
+
+    <h3>forRoot — full (single broker, all options)</h3>
+
+    <app-code lang="ts">AmqpModule.forRoot(&#123;
+  enabled: true,
+  brokers: [&#123;
+    name: 'primary',
+    url: 'amqp://localhost:5672',
+    username: 'svc',
+    password: '...',
+    replyStreamAddress: 'my-svc.replies', // optional — required for send()
+    defaultDlqAddress: 'my-svc.dlq',      // optional — used by DLQ admin UI
+    reconnectLimit: -1,
+    initialReconnectDelayMs: 100,
+    maxReconnectDelayMs: 30_000,
+    idleTimeoutMs: 60_000,
+    defaultSendTimeoutMs: 30_000,
+    bodyCodec: undefined,                 // optional — defaults to JsonBodyCodec
+  &#125;],
+&#125;)</app-code>
+
+    <h3>forRoot — multiple brokers</h3>
+    <p>
+      See <a routerLink="/multi-broker">Multi-broker</a> for the full story. Quick reference:
+    </p>
+    <app-code lang="ts">AmqpModule.forRoot(&#123;
+  brokers: [
+    &#123; name: 'primary',   url: 'amqp://broker-a:5672', username: '...', password: '...' &#125;,
+    &#123; name: 'analytics', url: 'amqp://broker-b:5672', username: '...', password: '...' &#125;,
+  ],
 &#125;)</app-code>
 
     <h3>forRootAsync — config from ConfigService</h3>
@@ -38,10 +68,12 @@ import &#123; AmqpModule &#125; from '&#64;softwarity/nestjs-amqp';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) =&gt; (&#123;
-        appName: config.get('APP_NAME'),
-        url: config.get('AMQP_URL'),
-        username: config.get('AMQP_USER'),
-        password: config.get('AMQP_PASSWORD'),
+        brokers: [&#123;
+          name: 'default',
+          url: config.get('AMQP_URL')!,
+          username: config.get('AMQP_USER'),
+          password: config.get('AMQP_PASSWORD'),
+        &#125;],
       &#125;),
     &#125;),
   ],
@@ -56,8 +88,10 @@ export class AmqpOptionsProvider implements AmqpOptionsFactory &#123;
 
   createAmqpOptions(): AmqpModuleOptions &#123;
     return &#123;
-      appName: this.config.get('APP_NAME'),
-      url: this.config.get('AMQP_URL'),
+      brokers: [&#123;
+        name: 'default',
+        url: this.config.get('AMQP_URL')!,
+      &#125;],
     &#125;;
   &#125;
 &#125;
@@ -67,7 +101,7 @@ AmqpModule.forRootAsync(&#123;
   useClass: AmqpOptionsProvider,
 &#125;)</app-code>
 
-    <h3>Full reference</h3>
+    <h3>Root-level options</h3>
 
     <table>
       <thead>
@@ -75,19 +109,34 @@ AmqpModule.forRootAsync(&#123;
       </thead>
       <tbody>
         <tr>
-          <td><code>appName</code></td>
-          <td><em>(empty)</em></td>
-          <td>Drives default <code>replyStreamAddress</code> (<code>&lt;appName&gt;.replies</code>),
-            <code>defaultDlqAddress</code> (<code>&lt;appName&gt;.dlq</code>), and the AMQP container ID.</td>
+          <td><code>brokers</code></td>
+          <td><em>(required)</em></td>
+          <td>Array of <code>BrokerOptions</code>. Must contain at least one entry; broker names must be unique.</td>
         </tr>
         <tr>
           <td><code>enabled</code></td>
           <td><code>true</code></td>
-          <td>Master switch. <code>false</code> &rarr; module loads but is inactive (no connection,
-            <code>&#64;Subscribe</code> not wired, <code>send()</code> errors, <code>emit()</code> is a silent
-            no-op). Useful for local dev without a broker.</td>
+          <td>Global kill switch. <code>false</code> &rarr; every broker loads but is inactive (no
+            connection, <code>&#64;Consume</code> not wired, <code>send()</code> errors,
+            <code>emit()</code> silently drops). Useful for local dev without a running broker.</td>
         </tr>
-        <tr><td><code>url</code></td><td><code>amqp://localhost:5672</code></td><td>Broker URL (<code>amqps://</code> for TLS).</td></tr>
+      </tbody>
+    </table>
+
+    <h3>BrokerOptions — per-broker reference</h3>
+
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Default</th><th>Meaning</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>name</code></td>
+          <td><em>(required)</em></td>
+          <td>Unique logical identifier referenced by decorators
+            (<code>&#64;Consume('addr', 'name')</code>) and the DLQ admin URL.</td>
+        </tr>
+        <tr><td><code>url</code></td><td><em>(required)</em></td><td>Broker URL (<code>amqp://</code> or <code>amqps://</code>).</td></tr>
         <tr><td><code>username</code></td><td><em>(unset)</em></td><td>SASL PLAIN username.</td></tr>
         <tr><td><code>password</code></td><td><em>(unset)</em></td><td>SASL PLAIN password.</td></tr>
         <tr><td><code>reconnectLimit</code></td><td><code>-1</code></td><td>Reconnect attempts; <code>-1</code> = forever.</td></tr>
@@ -97,44 +146,43 @@ AmqpModule.forRootAsync(&#123;
         <tr><td><code>defaultSendTimeoutMs</code></td><td><code>30000</code></td><td>Default reply timeout for <code>send()</code>.</td></tr>
         <tr>
           <td><code>replyStreamAddress</code></td>
-          <td><code>&lt;appName&gt;.replies</code></td>
-          <td>Shared reply stream — <strong>must be pre-declared as a stream queue</strong>. If unset and
-            no <code>appName</code>, <code>send()</code> is unavailable (use <code>emit()</code> only).</td>
+          <td><em>(unset)</em></td>
+          <td><strong>Required if you use <code>send()</code></strong> on this broker — must be
+            pre-declared as a stream queue. Absent → <code>send()</code> throws
+            <code>AmqpConnectionError</code>; <code>emit()</code> and <code>&#64;Consume</code> work
+            unchanged. See <a routerLink="/request-reply">Request / reply</a>.</td>
         </tr>
         <tr>
           <td><code>defaultDlqAddress</code></td>
-          <td><code>&lt;appName&gt;.dlq</code></td>
-          <td>Default DLQ used by <code>DlqBrowserService</code> when no address is passed.</td>
-        </tr>
-        <tr>
-          <td><code>autoPrefixQueues</code></td>
-          <td><code>true</code></td>
-          <td>Auto-prefix bare addresses with <code>/queues/</code> (RabbitMQ 4.x v2 addressing). Disable for
-            Artemis/Qpid/Azure SB.</td>
+          <td><em>(unset)</em></td>
+          <td><strong>Optional</strong>. The DLQ admin UI pre-fills this address when opening a session.
+            The lib never publishes to it itself — it only <code>delivery.reject()</code>, the broker
+            routes via its own DLX. See <a routerLink="/retry-and-dlq">Retry &amp; DLQ</a>.</td>
         </tr>
         <tr>
           <td><code>bodyCodec</code></td>
           <td><code>JsonBodyCodec</code></td>
-          <td>Custom wire codec. See the <em>Wire codec</em> page.</td>
+          <td>Custom wire codec for this broker. See the <a routerLink="/serialization">Serialization</a> page.</td>
         </tr>
       </tbody>
     </table>
 
     <h3>Disabled mode — booting without a broker</h3>
     <p>
-      Pass <code>enabled: false</code> to load the module in inactive mode. The app starts cleanly, no
-      connection is opened, <code>&#64;Subscribe</code> handlers are not wired, <code>emit()</code> is a
-      silent no-op, and <code>send()</code> errors immediately with <code>AmqpConnectionError</code>. This
-      is the recommended way to work offline (PR review, unit tests, local dev without docker).
+      Pass <code>enabled: false</code> at the root to load the module in inactive mode. The app starts
+      cleanly, no connection is opened, <code>&#64;Consume</code> handlers are not wired,
+      <code>emit()</code> is a silent no-op, and <code>send()</code> errors immediately with
+      <code>AmqpConnectionError</code>. This is the recommended way to work offline (PR review, unit tests,
+      local dev without docker).
     </p>
 
     <div class="callout danger">
-      <strong>⚠ Pre-declaration of every destination is mandatory.</strong> The shared reply stream,
-      every <code>&#64;Subscribe</code> queue, every <code>&#64;SubscribeTopic</code> stream, the DLX
-      and the DLQ all must exist on the broker before the app starts. The library does not call any
-      Management API — missing topology = <code>amqp:not-found</code> at link-open time and silent
-      failures. See the <a routerLink="/broker-topology">Broker topology</a> page for full examples
-      (RabbitMQ 4.x, Artemis, Azure SB, Qpid).
+      <strong>⚠ Pre-declaration of every destination is mandatory.</strong> The shared reply stream (if
+      <code>send()</code> is used), every <code>&#64;Consume</code> queue, every
+      <code>&#64;Subscribe</code> stream, the DLX and the DLQ all must exist on the broker before
+      the app starts. The library does not call any Management API — missing topology =
+      <code>amqp:not-found</code> at link-open time. See the
+      <a routerLink="/broker-topology">Broker topology</a> page for full examples.
     </div>
   `,
 })

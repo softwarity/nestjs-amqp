@@ -1,9 +1,10 @@
 import { Component } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { CodeComponent } from '../code/code.component';
 
 @Component({
   selector: 'app-publishers',
-  imports: [CodeComponent],
+  imports: [CodeComponent, RouterLink],
   template: `
     <h2>Publishers — &#64;AmqpQueue &amp; &#64;AmqpTopic</h2>
 
@@ -16,25 +17,23 @@ import { CodeComponent } from '../code/code.component';
       <thead><tr><th>Decorator</th><th>Interface</th><th>Destination</th><th>Methods</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>&#64;AmqpQueue(addr)</code></td>
+          <td><code>&#64;AmqpQueue(addr, brokerName?)</code></td>
           <td><code>AmqpQueue&lt;T&gt;</code></td>
           <td>Work-queue (classic / quorum)</td>
-          <td><code>send&lt;TRes&gt;(payload: T)</code> + <code>emit(payload: T)</code></td>
+          <td><code>emit(payload: T): boolean</code> + <code>send&lt;TRes&gt;(payload: T)</code></td>
         </tr>
         <tr>
-          <td><code>&#64;AmqpTopic(addr)</code></td>
+          <td><code>&#64;AmqpTopic(addr, brokerName?)</code></td>
           <td><code>AmqpTopic&lt;T&gt;</code></td>
           <td>Topic (stream-backed broadcast)</td>
-          <td><code>emit(payload: T)</code> only</td>
+          <td><code>emit(payload: T): boolean</code> only</td>
         </tr>
       </tbody>
     </table>
 
     <p>
-      Both addresses resolve to <code>/queues/&lt;name&gt;</code> internally (RabbitMQ 4.x v2 addressing).
-      The decorator you pick declares the <em>semantic intent</em>. Choosing <code>&#64;AmqpTopic</code>
-      gives you a compile-time error if someone tries to call <code>send()</code> on a broadcast
-      destination.
+      <code>brokerName</code> is optional when a single broker is configured. With several brokers,
+      omitting it throws at first property access. See <a routerLink="/multi-broker">Multi-broker</a>.
     </p>
 
     <h3>&#64;AmqpQueue&lt;T&gt; — work-queue publisher</h3>
@@ -46,8 +45,9 @@ import { CodeComponent } from '../code/code.component';
       valid for legacy code.
     </p>
 
+    <h4>emit() — fire-and-forget (the 90% case)</h4>
+
     <app-code lang="ts">import &#123; Injectable &#125; from '&#64;nestjs/common';
-import &#123; Observable &#125; from 'rxjs';
 import &#123; AmqpQueue &#125; from '&#64;softwarity/nestjs-amqp';
 
 &#64;Injectable()
@@ -55,24 +55,77 @@ export class OrdersService &#123;
   &#64;AmqpQueue('orders.create')
   private readonly orders!: AmqpQueue&lt;OrderBody&gt;;
 
-  createOrder(body: OrderBody): Observable&lt;OrderConfirmation&gt; &#123;
-    return this.orders.send&lt;OrderConfirmation&gt;(body, &#123;
-      timeoutMs: 5000,
-      properties: &#123; message_id: body.id, subject: 'order.create.v2' &#125;,
-      applicationProperties: &#123; tenantId: body.tenantId &#125;,
-    &#125;);
-  &#125;
-
   notifyCreated(body: OrderBody): void &#123;
     this.orders.emit(body);                  // ✅ compiles
-    // this.orders.emit(&#123; foo: 'bar' &#125;);   // ❌ TS error: not assignable to OrderBody
+    // this.orders.emit(&#123; foo: 'bar' &#125;);  // ❌ TS error: not assignable to OrderBody
   &#125;
 &#125;</app-code>
 
     <p>
-      Note that <code>send()</code> carries a second generic parameter <code>TRes</code> for the reply
-      shape — supplied at the call site (it can vary per request even on the same queue).
+      No correlation, no reply. Returns synchronously a <strong>boolean</strong>: <code>true</code> if
+      the message was handed off to the sender (broker enabled and connected), <code>false</code> if
+      the broker is disabled or not connected. The lib also logs a warning when it drops — the boolean
+      is for the call site to react.
     </p>
+
+    <h5>Fallback pattern — in-process bus when AMQP is unavailable</h5>
+
+    <p>
+      The boolean return makes it natural to fall back to NestJS's <code>EventEmitter2</code> (or any
+      in-process bus, or a local outbox table) so the message isn't lost when the broker is down:
+    </p>
+
+    <app-code lang="ts">import &#123; Injectable &#125; from '&#64;nestjs/common';
+import &#123; EventEmitter2 &#125; from '&#64;nestjs/event-emitter';
+import &#123; AmqpQueue &#125; from '&#64;softwarity/nestjs-amqp';
+
+&#64;Injectable()
+export class OrdersService &#123;
+  &#64;AmqpQueue('orders.create')
+  private readonly orders!: AmqpQueue&lt;OrderBody&gt;;
+
+  constructor(private readonly bus: EventEmitter2) &#123;&#125;
+
+  notifyCreated(body: OrderBody): void &#123;
+    if (!this.orders.emit(body)) &#123;
+      // Broker disabled or not yet connected — keep going via the in-process bus
+      // so local handlers still react. Useful for dev (broker off), boot lag
+      // (first events emitted before connection_open), or degraded mode.
+      this.bus.emit('orders.create', body);
+    &#125;
+  &#125;
+&#125;</app-code>
+
+    <p>
+      Other fallback strategies the boolean enables: writing to a local outbox table (poll + retry
+      later), pushing to a Redis dead-letter list, alerting on degraded mode, or simply incrementing
+      a metric and dropping silently. The lib is unopinionated — it just tells you whether the message
+      made it to the wire.
+    </p>
+
+    <div class="callout">
+      <strong>Note: <code>true</code> is a local emit, not a broker-side ack.</strong> The boolean
+      reflects whether the message reached rhea's sender pipeline; the broker may still reject it
+      later (surfaces as a <code>rejected</code> event in the logs). For strong broker acknowledgement,
+      use <code>send()</code> (request/reply) instead.
+    </div>
+
+    <h4>send() — request / reply (optional feature)</h4>
+
+    <p>
+      <code>send()</code> ships the message and returns an <code>Observable</code> that resolves with the
+      peer's reply. <strong>It requires a reply stream declared broker-side and a
+      <code>replyStreamAddress</code> on the broker options</strong> — see
+      <a routerLink="/request-reply">Request / reply</a> for the full setup.
+    </p>
+
+    <app-code lang="ts">createOrder(body: OrderBody): Observable&lt;OrderConfirmation&gt; &#123;
+  return this.orders.send&lt;OrderConfirmation&gt;(body, &#123;
+    timeoutMs: 5000,
+    properties: &#123; message_id: body.id, subject: 'order.create.v2' &#125;,
+    applicationProperties: &#123; tenantId: body.tenantId &#125;,
+  &#125;);
+&#125;</app-code>
 
     <h3>&#64;AmqpTopic&lt;T&gt; — broadcast publisher</h3>
 
@@ -99,28 +152,45 @@ export class BulletinService &#123;
 
     <div class="callout">
       The generic is purely a <strong>compile-time</strong> contract. At runtime every payload goes
-      through the same JSON codec — <code>T</code> is erased. The cost is zero, the benefit is that
-      typos and schema drifts on the publisher side fail at <code>tsc</code> time instead of in
-      production logs.
+      through the same codec — <code>T</code> is erased. The cost is zero, the benefit is that typos and
+      schema drifts on the publisher side fail at <code>tsc</code> time instead of in production logs.
     </div>
 
-    <h3>send() — request / reply</h3>
+    <h3>Multi-broker — passing the broker name</h3>
 
-    <ol>
-      <li>The library generates <code>correlationId = $&#123;client.replyPrefix&#125;:$&#123;randomUUID()&#125;</code></li>
-      <li>It publishes the body with <code>reply_to</code> set to the shared reply stream and the correlation ID</li>
-      <li>It returns an Observable that resolves when a reply with the matching correlation ID arrives</li>
-      <li>It times out after <code>opts.timeoutMs</code> (or <code>defaultSendTimeoutMs</code>), erroring with <code>AmqpTimeoutError</code></li>
-    </ol>
+    <app-code lang="ts">// Single broker — name optional, lone broker resolved automatically
+&#64;AmqpQueue('orders.create')                  private orders!: AmqpQueue&lt;OrderBody&gt;;
 
-    <h3>emit() — fire-and-forget</h3>
+// Multi-broker — name required; throws at first property access otherwise
+&#64;AmqpQueue('orders.create', 'primary')       private orders!: AmqpQueue&lt;OrderBody&gt;;
+&#64;AmqpTopic('events.metric', 'analytics')     private metrics!: AmqpTopic&lt;Metric&gt;;</app-code>
+
+    <h3>Runtime resolution — AmqpDestinations</h3>
 
     <p>
-      No correlation, no reply. Returns <code>void</code> synchronously. If the broker is not connected,
-      the message is dropped with a warning log — same semantic as a UDP send.
+      For addresses that aren't known at compile time (tenant-scoped queues, dynamic dispatchers), inject
+      <code>AmqpDestinations</code> and resolve a handle at runtime. Same generic + same
+      <code>brokerName?</code> semantics as the decorators.
     </p>
 
-    <h3>Options reference</h3>
+    <app-code lang="ts">import &#123; Injectable &#125; from '&#64;nestjs/common';
+import &#123; AmqpDestinations &#125; from '&#64;softwarity/nestjs-amqp';
+
+&#64;Injectable()
+export class DynamicPublisher &#123;
+  constructor(private readonly amqp: AmqpDestinations) &#123;&#125;
+
+  publishToTenant(tenantId: string, body: OrderBody): void &#123;
+    const queue = this.amqp.queue&lt;OrderBody&gt;(\`orders.\$&#123;tenantId&#125;\`);
+    queue.emit(body);
+  &#125;
+
+  publishMetric(m: Metric): void &#123;
+    this.amqp.topic&lt;Metric&gt;('events.metric', 'analytics').emit(m);
+  &#125;
+&#125;</app-code>
+
+    <h3>Options reference — emit() &amp; send()</h3>
 
     <table>
       <thead><tr><th>Option</th><th>Used by</th><th>Meaning</th></tr></thead>
@@ -159,7 +229,7 @@ export class BulletinService &#123;
     </ul>
 
     <div class="callout warn">
-      <strong>First access timing.</strong> The decorated property resolves the publisher singleton on its
+      <strong>First access timing.</strong> The decorated property resolves the broker publisher on its
       first access. If you call <code>this.orders</code> inside a service <em>constructor</em>, you'll get
       an exception because Nest's lifecycle hooks haven't run yet. Defer to a method body,
       <code>OnModuleInit</code>, or <code>OnApplicationBootstrap</code>.
@@ -169,32 +239,19 @@ export class BulletinService &#123;
 
     <p>
       User-facing addresses are bare names: <code>orders.create</code>, <code>changes.bulletin</code>.
-      Internally, the client prepends <code>/queues/</code> (RabbitMQ 4.x v2 addressing —
-      <code>amqp_address_v1_not_permitted</code> rejects the bare form). This works identically for
-      classic, quorum, and stream queues — all "queues" at the addressing layer.
+      The library normalises them per-broker automatically:
     </p>
-    <p>To target an exchange explicitly, pass the prefix yourself:</p>
+    <ul>
+      <li><strong>RabbitMQ 4.x</strong>: rejects bare names
+        (<code>amqp_address_v1_not_permitted</code>) and requires the v2 scheme — the library prepends
+        <code>/queues/</code> automatically when the peer's brand is detected as RabbitMQ.</li>
+      <li><strong>Artemis, Qpid, Azure Service Bus</strong>: accept bare names, no prefix added.</li>
+      <li><strong>Any address starting with <code>/</code></strong> passes through unchanged — escape
+        hatch for custom routing (exchanges, sub-queues, …) on any broker.</li>
+    </ul>
+    <p>To target an exchange explicitly on RabbitMQ, pass the prefix yourself:</p>
     <app-code lang="ts">&#64;AmqpQueue('/exchanges/amq.topic/orders.created.high')
 private readonly highPriority!: AmqpQueue;</app-code>
-
-    <p>
-      Already-prefixed addresses (<code>/queues/…</code>, <code>/exchanges/…</code>) pass through unchanged.
-      If your broker accepts bare names (Artemis, Qpid, Azure SB), set
-      <code>autoPrefixQueues: false</code> in the module options.
-    </p>
-
-    <h3>The reply queue — per-process prefix on a shared stream</h3>
-    <p>
-      The library generates a <code>replyPrefix = randomUUID()</code> per process. At boot it subscribes
-      to the configured reply stream with <code>streamOffset: 'next'</code>. Every instance of the service
-      sees every reply, but only routes those whose <code>correlation_id</code> starts with
-      <code>$&#123;replyPrefix&#125;:</code> to its local pending-replies map. Others are accept-and-dropped
-      (advancing the stream cursor).
-    </p>
-    <p>
-      Trade-off: N&times; bandwidth per reply (each instance reads everyone's replies). For low-volume
-      request/reply on a LAN, invisible.
-    </p>
   `,
 })
 export class PublishersComponent {}

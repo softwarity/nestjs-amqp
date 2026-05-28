@@ -2,19 +2,26 @@ import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@ne
 import { DiscoveryService, MetadataScanner } from '@nestjs/core';
 import { isObservable, Subscription } from 'rxjs';
 import type { Delivery } from 'rhea';
-import { AmqpClient } from './amqp.client';
 import { AMQP_PARAMS_METADATA, type AmqpContext, type AmqpSettler } from './amqp.param-decorators';
-import type { AmqpParamMeta, IncomingMessage, SubscribeMetadata } from './amqp.types';
-import { decodeBody, encodeBody } from './body-codec';
-import { AMQP_SUBSCRIBE_METADATA } from './subscribe.decorator';
+import type { AmqpParamMeta, ConsumerMetadata, IncomingMessage, RetryPolicy } from './amqp.types';
+import type { BrokerConnection } from './broker-connection';
+import { BrokerRegistry } from './broker-registry';
+import { AMQP_CONSUMER_METADATA } from './consumers.decorator';
 
 /**
  * Walks every provider at module-init time, finds methods carrying
- * `AMQP_SUBSCRIBE_METADATA`, validates each method's parameters are fully
+ * `AMQP_CONSUMER_METADATA`, resolves the target broker via the
+ * {@link BrokerRegistry}, validates each method's parameters are fully
  * annotated with `@Amqp*()` decorators (throws at boot otherwise), opens a
  * receiver per handler, dispatches each incoming message and applies the
- * `maxDelivery` / `dlq` policy on error. Reply routing (`msg.reply_to` →
- * `client.publish`) happens here too — there's no separate "replier" service.
+ * `maxDelivery` / `dlq` policy on error. Reply routing
+ * (`msg.reply_to` → `broker.publish`) happens here too — there's no separate
+ * "replier" service.
+ *
+ * In 0.2.x only `retryPolicy: 'immediate'` is functional. Other policies
+ * are accepted by the type system and validated for shape, but the runtime
+ * silently treats them as `'immediate'` with a one-line boot warning.
+ * Wired in a later release.
  */
 @Injectable()
 export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
@@ -23,16 +30,18 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
   private readonly subscriptions: Subscription[] = [];
 
   constructor(
-    private readonly client: AmqpClient,
+    private readonly registry: BrokerRegistry,
     private readonly discovery: DiscoveryService,
     private readonly scanner: MetadataScanner,
   ) {}
 
   onModuleInit(): void {
-    if (!this.client.getOptions().enabled) {
-      this.logger.log('AMQP disabled - skipping @Subscribe discovery');
-      return;
-    }
+    // Per-broker collection of (kind, address, target) tuples so we can log
+    // a clean topology summary at boot — one line per broker, listing every
+    // destination it consumes from with its decorator flavour.
+    const perBroker = new Map<string, string[]>();
+    for (const name of this.registry.names()) perBroker.set(name, []);
+
     const providers = this.discovery.getProviders();
     providers.forEach((wrapper) => {
       const instance = wrapper.instance as object | undefined;
@@ -41,27 +50,70 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
       if (!prototype) return;
       const methodNames = this.scanner.getAllMethodNames(prototype);
       methodNames.forEach((name) => {
-        const meta = Reflect.getMetadata(AMQP_SUBSCRIBE_METADATA, prototype, name) as SubscribeMetadata | undefined;
-        if (meta) this.wire(instance, prototype, name, meta);
+        const meta = Reflect.getMetadata(AMQP_CONSUMER_METADATA, prototype, name) as ConsumerMetadata | undefined;
+        if (meta) {
+          const broker = this.resolveBroker(meta, instance, name);
+          this.wire(broker, instance, prototype, name, meta);
+          perBroker
+            .get(broker.options.name)
+            ?.push(`@${decoratorName(meta)} ${meta.address} -> ${describeHandler(instance, name)}`);
+        }
       });
     });
-    this.logger.log(`wired ${this.subscriptions.length} @Subscribe handler(s)`);
+
+    for (const [brokerName, entries] of perBroker) {
+      if (entries.length === 0) {
+        this.logger.log(`broker '${brokerName}': no consumers`);
+        continue;
+      }
+      this.logger.log(`broker '${brokerName}': ${entries.length} consumer(s)`);
+      for (const entry of entries) this.logger.log(`  - ${entry}`);
+    }
   }
 
-  private wire(instance: object, prototype: object, methodName: string, meta: SubscribeMetadata): void {
+  private resolveBroker(meta: ConsumerMetadata, instance: object, methodName: string): BrokerConnection {
+    try {
+      return this.registry.resolveConnection(meta.brokerName);
+    } catch (err) {
+      const where = `${describeHandler(instance, methodName)} (@${decoratorName(meta)} '${meta.address}')`;
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`Cannot wire ${where}: ${reason}`);
+    }
+  }
+
+  private wire(
+    broker: BrokerConnection,
+    instance: object,
+    prototype: object,
+    methodName: string,
+    meta: ConsumerMetadata,
+  ): void {
     const ctor = (instance as { constructor: { name: string } }).constructor.name;
     const method = (instance as Record<string, unknown>)[methodName] as ((...args: unknown[]) => unknown) | undefined;
     if (typeof method !== 'function') {
-      throw new Error(`@Subscribe handler ${ctor}.${methodName} is not a callable method`);
+      throw new Error(`@${decoratorName(meta)} handler ${ctor}.${methodName} is not a callable method`);
     }
-    const params = this.readAndValidateParams(prototype, methodName, ctor, method.length);
-    this.logger.log(
-      `@Subscribe '${meta.address}' -> ${ctor}.${methodName} (maxDelivery=${meta.options.maxDelivery}, dlq=${meta.options.dlq})`,
+    if (meta.options.dlq && !broker.options.defaultDlqAddress) {
+      this.logger.warn(
+        `@${decoratorName(meta)} '${meta.address}' on broker '${broker.options.name}' has dlq:true but the broker has no defaultDlqAddress configured. ` +
+          `The lib will still delivery.reject() on terminal failure — make sure the queue's DLX is set up broker-side or the message will be dropped.`,
+      );
+    }
+    if (meta.options.retryPolicy !== 'immediate') {
+      this.logger.warn(
+        `@${decoratorName(meta)} '${meta.address}' on broker '${broker.options.name}' declares retryPolicy=${describeRetryPolicy(meta.options.retryPolicy)} ` +
+          `but only 'immediate' is implemented in 0.2.x — falling back to immediate. Client-side scheduled republish is planned for 0.3.x.`,
+      );
+    }
+    const params = this.readAndValidateParams(meta, prototype, methodName, ctor, method.length);
+    this.logger.debug(
+      `@${decoratorName(meta)} '${meta.address}' -> ${ctor}.${methodName} on broker '${broker.options.name}' ` +
+        `(maxDelivery=${meta.options.maxDelivery}, retryPolicy=${describeRetryPolicy(meta.options.retryPolicy)}, dlq=${meta.options.dlq})`,
     );
-    const sub = this.client
+    const sub = broker
       .messages$(meta.address, { creditWindow: meta.options.maxWindow, streamOffset: meta.options.streamOffset })
       .subscribe({
-        next: (incoming) => this.dispatch(instance, method, params, meta, incoming),
+        next: (incoming) => this.dispatch(broker, instance, method, params, meta, incoming),
         error: (err) => this.logger.error(`messages$ '${meta.address}' errored: ${describe(err)}`),
       });
     this.subscriptions.push(sub);
@@ -80,23 +132,30 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
    *     developer to pick one).
    *   - 2+ un-annotated → ambiguous (which one is the body?), throw.
    */
-  private readAndValidateParams(prototype: object, methodName: string, ctor: string, arity: number): AmqpParamMeta[] {
+  private readAndValidateParams(
+    meta: ConsumerMetadata,
+    prototype: object,
+    methodName: string,
+    ctor: string,
+    arity: number,
+  ): AmqpParamMeta[] {
     const params = (Reflect.getMetadata(AMQP_PARAMS_METADATA, prototype, methodName) ?? []) as AmqpParamMeta[];
     const unannotated: number[] = [];
     for (let i = 0; i < arity; i++) {
       if (!params[i]) unannotated.push(i);
     }
     if (unannotated.length === 0) return params;
+    const decoTag = `@${decoratorName(meta)}`;
     if (unannotated.length > 1) {
       throw new Error(
-        `@Subscribe handler ${ctor}.${methodName} has ${unannotated.length} un-annotated parameters ` +
+        `${decoTag} handler ${ctor}.${methodName} has ${unannotated.length} un-annotated parameters ` +
           `(indices ${unannotated.join(', ')}). At most one is allowed - it is bound as @AmqpBody(). ` +
           `Annotate the others with @AmqpContext() / @AmqpSettler() / @AmqpDeliveryCount() / @AmqpProperties() / etc.`,
       );
     }
     if (params.some((p) => p?.kind === 'BODY')) {
       throw new Error(
-        `@Subscribe handler ${ctor}.${methodName} mixes an explicit @AmqpBody() with an un-annotated ` +
+        `${decoTag} handler ${ctor}.${methodName} mixes an explicit @AmqpBody() with an un-annotated ` +
           `parameter at index ${unannotated[0]}. Pick one style: either annotate every parameter, or omit ` +
           `@AmqpBody() and let the single un-annotated parameter receive the body.`,
       );
@@ -109,14 +168,15 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
   }
 
   private dispatch(
+    broker: BrokerConnection,
     instance: object,
     method: (...args: unknown[]) => unknown,
     params: AmqpParamMeta[],
-    meta: SubscribeMetadata,
+    meta: ConsumerMetadata,
     incoming: IncomingMessage,
   ): void {
-    const ctx = buildContext(meta.address, incoming);
-    const args = params.map((p) => resolveArg(p, incoming, ctx));
+    const ctx = buildContext(meta.address, incoming, broker);
+    const args = params.map((p) => resolveArg(p, incoming, ctx, broker));
 
     let result: unknown;
     try {
@@ -129,7 +189,7 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
 
     if (isObservable(result)) {
       result.subscribe({
-        next: (value: unknown) => this.replyIfRequested(incoming, value),
+        next: (value: unknown) => this.replyIfRequested(broker, incoming, value),
         complete: () => {
           if (!ctx.settled) incoming.delivery.accept();
         },
@@ -140,15 +200,15 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
       });
       return;
     }
-    if (result !== undefined) this.replyIfRequested(incoming, result);
+    if (result !== undefined) this.replyIfRequested(broker, incoming, result);
     if (!ctx.settled) incoming.delivery.accept();
   }
 
-  private replyIfRequested(incoming: IncomingMessage, value: unknown): void {
+  private replyIfRequested(broker: BrokerConnection, incoming: IncomingMessage, value: unknown): void {
     const replyTo = incoming.message.properties?.reply_to;
     if (!replyTo) return;
-    this.client.publish(replyTo, {
-      body: encodeBody(value),
+    broker.publish(replyTo, {
+      body: broker.encodeBody(value),
       properties: { correlation_id: incoming.message.properties?.correlation_id },
     });
   }
@@ -159,10 +219,15 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
   }
 }
 
-function resolveArg(meta: AmqpParamMeta, incoming: IncomingMessage, ctx: AmqpContext): unknown {
+function resolveArg(
+  meta: AmqpParamMeta,
+  incoming: IncomingMessage,
+  ctx: AmqpContext,
+  broker: BrokerConnection,
+): unknown {
   switch (meta.kind) {
     case 'BODY':
-      return decodeBody(incoming.message.body);
+      return broker.decodeBody(incoming.message.body);
     case 'ADDRESS':
       return ctx.address;
     case 'DELIVERY_COUNT':
@@ -192,7 +257,7 @@ function makeSettler(ctx: AmqpContext): AmqpSettler {
   };
 }
 
-function buildContext(address: string, incoming: IncomingMessage): AmqpContext {
+function buildContext(address: string, incoming: IncomingMessage, _broker: BrokerConnection): AmqpContext {
   let settled = false;
   // AMQP `delivery_count` is the number of UNSUCCESSFUL prior deliveries (0
   // on first attempt). We expose a 1-based attempt number for ergonomics.
@@ -227,9 +292,14 @@ function buildContext(address: string, incoming: IncomingMessage): AmqpContext {
  *   - more attempts allowed → `delivery.modified({delivery_failed: true})`,
  *     broker re-delivers with `delivery_count + 1`
  *   - last attempt → `dlq ? reject() : accept()`
+ *
+ * In 0.2.x retry timing is delegated entirely to the broker — `retryPolicy`
+ * is read at boot for validation only. The runtime always behaves as
+ * `'immediate'`. Client-side scheduled republish (fixed / exponential) will
+ * be wired in 0.3.x.
  */
 function applyErrorPolicy(
-  opts: { maxDelivery: number; dlq: boolean },
+  opts: { maxDelivery: number; dlq: boolean; retryPolicy: RetryPolicy },
   deliveryCount: number,
   delivery: Delivery,
   err: unknown,
@@ -252,4 +322,19 @@ function describe(err: unknown): string {
     return e.description ?? e.condition ?? JSON.stringify(err);
   }
   return String(err);
+}
+
+function describeHandler(instance: object, methodName: string): string {
+  const ctor = (instance as { constructor: { name: string } }).constructor.name;
+  return `${ctor}.${methodName}`;
+}
+
+function decoratorName(meta: ConsumerMetadata): 'Consume' | 'Subscribe' {
+  return meta.kind === 'consume' ? 'Consume' : 'Subscribe';
+}
+
+function describeRetryPolicy(policy: RetryPolicy): string {
+  if (policy === 'immediate') return 'immediate';
+  if (policy.kind === 'fixed') return `fixed(${policy.delayMs}ms)`;
+  return `exponential(initial=${policy.initialMs}ms, x${policy.multiplier}, max=${policy.maxMs}ms)`;
 }

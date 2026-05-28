@@ -2,7 +2,7 @@ import type { DeliveryRejectError, MessageHeader, MessageProperties } from 'rhea
 import type { AmqpParamKind, AmqpParamMeta } from './amqp.types';
 
 /** Metadata key holding the per-parameter array of `AmqpParamMeta` on a
- *  `@Subscribe` method. Indexed by parameter position. */
+ *  `@Consume` / `@Subscribe` method. Indexed by parameter position. */
 export const AMQP_PARAMS_METADATA = Symbol('amqp:params');
 
 /** Manual settle control injected via `@AmqpSettler()`. Calling any method
@@ -49,8 +49,8 @@ function paramDecorator(kind: AmqpParamKind, key?: string): ParameterDecorator {
 /** Inject the JSON-decoded message body. */
 export const AmqpBody = (): ParameterDecorator => paramDecorator('BODY');
 
-/** Inject the address the `@Subscribe` was bound to (useful for multi-route
- *  handlers or logging). */
+/** Inject the address the `@Consume` / `@Subscribe` was bound to (useful for
+ *  multi-route handlers or logging). */
 export const AmqpAddress = (): ParameterDecorator => paramDecorator('ADDRESS');
 
 /** Inject the 1-based attempt number. 1 on first delivery, +1 each retry. */

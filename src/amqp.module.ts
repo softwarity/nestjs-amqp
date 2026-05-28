@@ -1,7 +1,7 @@
 import { DynamicModule, Global, Module, type Provider } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
-import { AmqpClient } from './amqp.client';
 import { AmqpConsumerExplorer } from './amqp.consumer-explorer';
+import { AmqpDestinations } from './amqp.destinations';
 import {
   AMQP_MODULE_OPTIONS,
   type AmqpModuleAsyncOptions,
@@ -10,8 +10,7 @@ import {
   resolveAmqpOptions,
   type ResolvedAmqpModuleOptions,
 } from './amqp.options';
-import { AmqpPublisher } from './amqp.publisher';
-import { setActiveBodyCodec } from './body-codec';
+import { BrokerRegistry } from './broker-registry';
 import { DlqBrowserService } from './dlq-browser.service';
 
 /**
@@ -20,8 +19,12 @@ import { DlqBrowserService } from './dlq-browser.service';
  * Use `AmqpModule.forRoot(options)` for static config, or
  * `AmqpModule.forRootAsync(...)` to pull options from `ConfigService` or any
  * async source. The module is `@Global` — any other module's providers can
- * use the `@AmqpQueue` / `@AmqpTopic` / `@Subscribe` decorators without
- * re-importing.
+ * use the `@AmqpQueue` / `@AmqpTopic` / `@Consume` / `@Subscribe`
+ * decorators and inject {@link AmqpDestinations} without re-importing.
+ *
+ * The module supports one or several brokers — pass each as an entry of
+ * `options.brokers[]`. With a single broker, the `brokerName` argument on
+ * decorators and locator methods is optional.
  *
  * `DlqBrowserService` is always provided; import the optional
  * `DlqAdminModule` separately if you also want the HTTP browser API.
@@ -29,9 +32,8 @@ import { DlqBrowserService } from './dlq-browser.service';
 @Global()
 @Module({})
 export class AmqpModule {
-  static forRoot(options: AmqpModuleOptions = {}): DynamicModule {
+  static forRoot(options: AmqpModuleOptions): DynamicModule {
     const resolved = resolveAmqpOptions(options);
-    setActiveBodyCodec(resolved.bodyCodec);
     const optionsProvider: Provider = {
       provide: AMQP_MODULE_OPTIONS,
       useValue: resolved,
@@ -50,8 +52,8 @@ function buildModule(providers: Provider[], imports: NonNullable<DynamicModule['
   return {
     module: AmqpModule,
     imports: [DiscoveryModule, ...imports],
-    providers: [...providers, AmqpClient, AmqpPublisher, AmqpConsumerExplorer, DlqBrowserService],
-    exports: [AMQP_MODULE_OPTIONS, AmqpClient, DlqBrowserService],
+    providers: [...providers, BrokerRegistry, AmqpConsumerExplorer, AmqpDestinations, DlqBrowserService],
+    exports: [AMQP_MODULE_OPTIONS, BrokerRegistry, AmqpDestinations, DlqBrowserService],
   };
 }
 
@@ -61,9 +63,7 @@ function createAsyncOptionsProvider(asyncOptions: AmqpModuleAsyncOptions): Provi
       provide: AMQP_MODULE_OPTIONS,
       useFactory: async (...args: unknown[]): Promise<ResolvedAmqpModuleOptions> => {
         const opts = await asyncOptions.useFactory!(...args);
-        const resolved = resolveAmqpOptions(opts);
-        setActiveBodyCodec(resolved.bodyCodec);
-        return resolved;
+        return resolveAmqpOptions(opts);
       },
       inject: asyncOptions.inject ?? [],
     };
@@ -76,9 +76,7 @@ function createAsyncOptionsProvider(asyncOptions: AmqpModuleAsyncOptions): Provi
     provide: AMQP_MODULE_OPTIONS,
     useFactory: async (factory: AmqpOptionsFactory): Promise<ResolvedAmqpModuleOptions> => {
       const opts = await factory.createAmqpOptions();
-      const resolved = resolveAmqpOptions(opts);
-      setActiveBodyCodec(resolved.bodyCodec);
-      return resolved;
+      return resolveAmqpOptions(opts);
     },
     inject: [factoryToken],
   };

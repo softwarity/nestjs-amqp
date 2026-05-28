@@ -2,9 +2,9 @@ import { Injectable, Logger, NotFoundException, type OnModuleDestroy } from '@ne
 import { randomUUID } from 'node:crypto';
 import type { Delivery, EventContext, Message, Receiver } from 'rhea';
 import { Observable, throwError } from 'rxjs';
-import { AmqpClient } from './amqp.client';
 import { AmqpConnectionError } from './amqp.errors';
-import { decodeBody, encodeBody } from './body-codec';
+import type { BrokerConnection } from './broker-connection';
+import { BrokerRegistry } from './broker-registry';
 import type { DlqSession, HeldMessage, XDeath } from './dlq-browser.types';
 
 // How long to wait for messages to arrive after adding credit. If the DLQ
@@ -22,15 +22,21 @@ const TTL_SWEEP_INTERVAL_MS = 30_000;
 interface SessionRecord {
   readonly session: DlqSession;
   readonly receiver: Receiver;
+  readonly broker: BrokerConnection;
 }
 
 /**
- * DLQ browser — open a session on a DLQ address, paginate through held
- * (un-settled) messages, then replay or drop them one by one. All state
- * lives in RAM; a backend crash drops the AMQP connection and the broker
- * re-queues every un-settled delivery (free rollback). Mono-instance by
- * design — for multi-instance deployments, route the admin session to a
- * single instance via sticky LB or expose only one replica.
+ * DLQ browser — open a session on a DLQ address (on a specific broker),
+ * paginate through held (un-settled) messages, then replay or drop them
+ * one by one. All state lives in RAM; a backend crash drops the AMQP
+ * connection and the broker re-queues every un-settled delivery (free
+ * rollback). Mono-instance by design — for multi-instance deployments,
+ * route the admin session to a single instance via sticky LB or expose
+ * only one replica.
+ *
+ * Each session is bound to one broker (the one whose DLQ is being
+ * browsed). The replay path publishes back to the origin queue *on the
+ * same broker* — cross-broker replay is not supported.
  */
 @Injectable()
 export class DlqBrowserService implements OnModuleDestroy {
@@ -39,25 +45,36 @@ export class DlqBrowserService implements OnModuleDestroy {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly ttlTimer = setInterval(() => this.sweepIdleSessions(), TTL_SWEEP_INTERVAL_MS);
 
-  constructor(private readonly client: AmqpClient) {}
+  constructor(private readonly registry: BrokerRegistry) {}
 
   /**
-   * Open a session on `dlqAddress`. Allocates `pageSize` credits to the
-   * receiver, waits for at least that many messages or `DRAIN_TIMEOUT_MS`,
-   * whichever comes first. Returns the populated session.
+   * Open a session on `dlqAddress` for the given broker (defaults to the
+   * single configured broker if `brokerName` is omitted and only one is
+   * configured). Allocates `pageSize` credits to the receiver, waits for at
+   * least that many messages or `DRAIN_TIMEOUT_MS`, whichever comes first.
+   * Returns the populated session.
    */
-  openSession(dlqAddress: string, pageSize: number, openedBy: string): Observable<DlqSession> {
+  openSession(dlqAddress: string, pageSize: number, openedBy: string, brokerName?: string): Observable<DlqSession> {
     if (pageSize < 1 || pageSize > 200) {
       return throwError(() => new Error(`pageSize must be between 1 and 200 (got ${pageSize})`));
     }
+    let broker: BrokerConnection;
+    try {
+      broker = this.registry.resolveConnection(brokerName);
+    } catch (err) {
+      return throwError(() => err);
+    }
     return new Observable<DlqSession>((subscriber) => {
-      const receiver = this.client.openManualReceiver(dlqAddress);
+      const receiver = broker.openManualReceiver(dlqAddress);
       if (!receiver) {
-        subscriber.error(new AmqpConnectionError('AMQP not ready - cannot open a DLQ session'));
+        subscriber.error(
+          new AmqpConnectionError(`AMQP not ready on broker '${broker.options.name}' - cannot open a DLQ session`),
+        );
         return;
       }
       const session: DlqSession = {
         token: randomUUID(),
+        brokerName: broker.options.name,
         dlqAddress,
         openedBy,
         openedAt: new Date(),
@@ -69,11 +86,11 @@ export class DlqBrowserService implements OnModuleDestroy {
       const onOpen = (): void => {
         receiver.removeAllListeners('receiver_open');
         receiver.removeAllListeners('receiver_error');
-        this.drainInto(receiver, session, pageSize, 0).subscribe({
+        this.drainInto(broker, receiver, session, pageSize, 0).subscribe({
           next: () => {
-            this.sessions.set(session.token, { session, receiver });
+            this.sessions.set(session.token, { session, receiver, broker });
             this.logger.log(
-              `dlq session opened: token=${session.token} addr=${dlqAddress} by=${openedBy} drained=${session.messages.size}`,
+              `dlq session opened: token=${session.token} broker=${broker.options.name} addr=${dlqAddress} by=${openedBy} drained=${session.messages.size}`,
             );
             subscriber.next(session);
             subscriber.complete();
@@ -88,7 +105,11 @@ export class DlqBrowserService implements OnModuleDestroy {
         receiver.removeAllListeners('receiver_open');
         receiver.removeAllListeners('receiver_error');
         if (receiver.is_open()) receiver.close();
-        subscriber.error(new AmqpConnectionError(`receiver_error on '${dlqAddress}': ${describeCtxError(ctx)}`));
+        subscriber.error(
+          new AmqpConnectionError(
+            `receiver_error on '${dlqAddress}' (broker '${broker.options.name}'): ${describeCtxError(ctx)}`,
+          ),
+        );
       };
       receiver.on('receiver_open', onOpen);
       receiver.on('receiver_error', onError);
@@ -104,8 +125,9 @@ export class DlqBrowserService implements OnModuleDestroy {
 
   /**
    * Replay one held message — publish a copy to its original queue (taken
-   * from `xDeath[0].queue`) then `accept()` the original to remove it from
-   * the DLQ. Removes it from the session.
+   * from `xDeath[0].queue`) **on the same broker the session is bound to**,
+   * then `accept()` the original to remove it from the DLQ. Removes it from
+   * the session.
    */
   replay(token: string, idx: number): Observable<void> {
     return new Observable<void>((subscriber) => {
@@ -127,15 +149,17 @@ export class DlqBrowserService implements OnModuleDestroy {
       const keepProps = { ...held.properties };
       delete keepProps.reply_to;
       delete keepProps.correlation_id;
-      this.client.publish(origin, {
-        body: encodeBody(held.body),
+      record.broker.publish(origin, {
+        body: record.broker.encodeBody(held.body),
         properties: keepProps,
         application_properties: held.applicationProperties,
       });
       held.delivery.accept();
       record.session.messages.delete(idx);
       this.touch(record.session);
-      this.logger.log(`dlq replay: token=${token} idx=${idx} origin=${origin} by=${record.session.openedBy}`);
+      this.logger.log(
+        `dlq replay: token=${token} broker=${record.broker.options.name} idx=${idx} origin=${origin} by=${record.session.openedBy}`,
+      );
       subscriber.next();
       subscriber.complete();
     });
@@ -177,7 +201,7 @@ export class DlqBrowserService implements OnModuleDestroy {
       }
       this.releaseAll(record.session);
       record.session.pageIndex += 1;
-      this.drainInto(record.receiver, record.session, record.session.pageSize, 0).subscribe({
+      this.drainInto(record.broker, record.receiver, record.session, record.session.pageSize, 0).subscribe({
         next: () => {
           this.touch(record.session);
           this.logger.log(
@@ -247,7 +271,13 @@ export class DlqBrowserService implements OnModuleDestroy {
     }
   }
 
-  private drainInto(receiver: Receiver, session: DlqSession, pageSize: number, startIdx: number): Observable<void> {
+  private drainInto(
+    broker: BrokerConnection,
+    receiver: Receiver,
+    session: DlqSession,
+    pageSize: number,
+    startIdx: number,
+  ): Observable<void> {
     return new Observable<void>((subscriber) => {
       let nextIdx = startIdx;
       let finished = false;
@@ -263,7 +293,7 @@ export class DlqBrowserService implements OnModuleDestroy {
 
       const onMessage = (ctx: EventContext): void => {
         if (!ctx.message || !ctx.delivery) return;
-        const held = buildHeldMessage(ctx.message, ctx.delivery, nextIdx);
+        const held = buildHeldMessage(broker, ctx.message, ctx.delivery, nextIdx);
         session.messages.set(nextIdx, held);
         nextIdx += 1;
         if (session.messages.size >= pageSize) finish();
@@ -276,12 +306,12 @@ export class DlqBrowserService implements OnModuleDestroy {
   }
 }
 
-function buildHeldMessage(message: Message, delivery: Delivery, idx: number): HeldMessage {
+function buildHeldMessage(broker: BrokerConnection, message: Message, delivery: Delivery, idx: number): HeldMessage {
   return {
     idx,
     message,
     delivery,
-    body: decodeBody(message.body),
+    body: broker.decodeBody(message.body),
     properties: message.properties ?? {},
     applicationProperties: message.application_properties ?? {},
     xDeath: extractXDeath(message),

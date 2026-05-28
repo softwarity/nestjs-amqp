@@ -1,32 +1,42 @@
-import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import rhea from 'rhea';
 import type { Connection, Message, Receiver, Sender } from 'rhea';
 import { BehaviorSubject, EMPTY, Observable, ReplaySubject, Subject } from 'rxjs';
 import { filter, take } from 'rxjs/operators';
 import { AmqpConnectionError } from './amqp.errors';
-import { AMQP_MODULE_OPTIONS, type ResolvedAmqpModuleOptions } from './amqp.options';
+import type { ResolvedBrokerOptions } from './amqp.options';
 import type { IncomingMessage, StreamOffset } from './amqp.types';
+import { type AmqpBodyCodec, defaultBodyCodec } from './body-codec';
 import { normalizeIncoming, toRheaOutgoing } from './rhea-adapter';
 
+/** Brand reported by the peer in its AMQP Open frame `properties.product`
+ *  field. Used for diagnostics and to gate broker-specific features
+ *  (delayed redelivery in 0.3.x). `'unknown'` means we couldn't recognise
+ *  the product string — falls back to AMQP-standard behaviour everywhere. */
+export type BrokerBrand = 'rabbitmq' | 'artemis' | 'azure-service-bus' | 'qpid' | 'unknown';
+
 /**
- * Low-level rhea wrapper. Owns the single AMQP 1.0 Connection, the receiver
- * on the shared reply stream (filtered by a per-process correlation prefix)
- * and a per-address sender pool. Higher-level services (`AmqpPublisher`,
- * `AmqpConsumerExplorer`) compose Observables on top of this.
+ * Low-level rhea wrapper for **one** broker. Owns the single AMQP 1.0
+ * Connection, the receiver on the shared reply stream (filtered by a
+ * per-process correlation prefix), a per-address sender pool, and the
+ * body codec used to (de)serialise message bodies on this broker.
  *
- * Topology is fully static — declared broker-side (e.g. RabbitMQ
- * `definitions.json`), no Management API call at runtime. `OnModuleInit`
- * opens the connection; rhea handles reconnects transparently — receivers
- * and senders re-attach on the same JS objects.
+ * Topology is fully static — declared broker-side, no Management API call
+ * at runtime. `start()` opens the connection; rhea handles reconnects
+ * transparently. The instance is constructed by `BrokerRegistry` — not a
+ * NestJS provider on its own.
  */
-@Injectable()
-export class AmqpClient implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(AmqpClient.name);
+export class BrokerConnection {
+  private readonly logger: Logger;
 
   private connection?: Connection;
   private replyReceiver?: Receiver;
   private readonly senders = new Map<string, Sender>();
+
+  private brandDetected: BrokerBrand = 'unknown';
+  private brandProduct?: string;
+  private brandVersion?: string;
 
   /** Per-process correlation prefix. Reply messages whose `correlation_id`
    *  does not start with `${replyPrefix}:` belong to another instance and are
@@ -40,7 +50,7 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
    *  `connection_open`. Never emits if no reply stream is configured. */
   private readonly replyAddressSubject = new ReplaySubject<string>(1);
   /** Reply messages addressed to *this* process (filtered by prefix in the
-   *  receiver's `message` handler). `AmqpPublisher` correlates each entry by
+   *  receiver's `message` handler). The publisher correlates each entry by
    *  `correlation_id` to route to the right pending Subject. */
   private readonly repliesSubject = new Subject<IncomingMessage>();
 
@@ -48,16 +58,46 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
   readonly replyToAddress$ = this.replyAddressSubject.asObservable();
   readonly replies$ = this.repliesSubject.asObservable();
 
-  constructor(@Inject(AMQP_MODULE_OPTIONS) private readonly options: ResolvedAmqpModuleOptions) {}
+  private readonly codec: AmqpBodyCodec;
 
-  /** Expose the resolved options to other internal providers. */
-  getOptions(): ResolvedAmqpModuleOptions {
-    return this.options;
+  constructor(
+    readonly options: ResolvedBrokerOptions,
+    private readonly enabled: boolean,
+  ) {
+    this.logger = new Logger(`${BrokerConnection.name}:${options.name}`);
+    this.codec = options.bodyCodec ?? defaultBodyCodec;
   }
 
-  onModuleInit(): void {
-    if (!this.options.enabled) {
-      this.logger.log('AMQP disabled (enabled=false) — module loaded but inactive; send/emit/@Subscribe are no-ops');
+  /** Brand detected on the peer's Open frame. `'unknown'` until the first
+   *  `connection_open` fires (or if the peer doesn't advertise `product`). */
+  get brand(): BrokerBrand {
+    return this.brandDetected;
+  }
+
+  /** Raw product string from the peer's Open frame, if any. */
+  get peerProduct(): string | undefined {
+    return this.brandProduct;
+  }
+
+  /** Raw version string from the peer's Open frame, if any. */
+  get peerVersion(): string | undefined {
+    return this.brandVersion;
+  }
+
+  /** Encode a JS value using the broker's configured body codec. */
+  encodeBody(value: unknown): unknown {
+    return this.codec.encode(value);
+  }
+
+  /** Decode an incoming body using the broker's configured body codec. */
+  decodeBody(body: unknown): unknown {
+    return this.codec.decode(body);
+  }
+
+  /** Open the connection. Called by `BrokerRegistry.onModuleInit`. */
+  start(): void {
+    if (!this.enabled) {
+      this.logger.log('AMQP disabled (enabled=false) — broker inactive; send/emit/consumers are no-ops');
       return;
     }
     const url = new URL(this.options.url);
@@ -67,7 +107,7 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
       transport: url.protocol === 'amqps:' ? 'tls' : 'tcp',
       username: this.options.username,
       password: this.options.password,
-      container_id: this.options.appName || undefined,
+      container_id: this.options.name,
       idle_time_out: this.options.idleTimeoutMs,
       reconnect: true,
       reconnect_limit: this.options.reconnectLimit,
@@ -77,7 +117,10 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
     this.connection = conn;
 
     conn.on('connection_open', () => {
-      this.logger.log(`connection_open to ${this.options.url}`);
+      this.detectBrand(conn);
+      this.logger.log(
+        `connection_open to ${this.options.url}${this.brandProduct ? ` (peer: ${this.brandProduct}${this.brandVersion ? ` ${this.brandVersion}` : ''})` : ''}`,
+      );
       this.connectedSubject.next(true);
       if (this.options.replyStreamAddress) this.openReplyReceiver(conn);
     });
@@ -103,7 +146,7 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
    * `rabbitmq:stream-offset-spec` filter. No effect on classic/quorum queues.
    */
   messages$(address: string, opts: { creditWindow: number; streamOffset?: StreamOffset }): Observable<IncomingMessage> {
-    if (!this.options.enabled) return EMPTY;
+    if (!this.enabled) return EMPTY;
     return new Observable<IncomingMessage>((subscriber) => {
       let receiver: Receiver | undefined;
       const ready = this.connected$.pipe(
@@ -113,7 +156,7 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
       const sub = ready.subscribe(() => {
         const conn = this.connection;
         if (!conn) {
-          subscriber.error(new AmqpConnectionError('AMQP connection vanished'));
+          subscriber.error(new AmqpConnectionError(`AMQP connection '${this.options.name}' vanished`));
           return;
         }
         const source: Parameters<Connection['open_receiver']>[0] = {
@@ -149,7 +192,7 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
    * connection isn't open yet (caller should retry on `connected$`).
    */
   openManualReceiver(address: string): Receiver | undefined {
-    if (!this.options.enabled) return undefined;
+    if (!this.enabled) return undefined;
     const conn = this.connection;
     if (!conn?.is_open()) return undefined;
     return conn.open_receiver({
@@ -161,23 +204,39 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Publish `message` on `address`. Sender pooled per-address. Fire-and-forget
-   * at this layer: if the broker is not connected, the call is logged and
-   * dropped. Reply correlation is the publisher's concern, not this method's.
-   *
-   * `message.properties` (the AMQP 1.0 standard properties — `reply_to`,
-   * `correlation_id`, `message_id`, `subject`, …) is shaped as a nested object
-   * by the public API; `toRheaOutgoing` flattens it before reaching rhea, see
-   * the function for why.
+   * at this layer: if the broker is disabled or not connected, the call is
+   * logged and dropped, and we return `false` so the caller can fall back to
+   * another transport (in-process bus, local store-and-forward, retry queue,
+   * …). Returns `true` once the message has been handed off to rhea's sender
+   * — this is a "local emit", not a broker-side ack (the broker may still
+   * reject the message later; that surfaces as a sender `rejected` event in
+   * the logs). Reply correlation is the publisher's concern, not this
+   * method's.
    */
-  publish(address: string, message: Message): void {
-    if (!this.options.enabled) return;
+  publish(address: string, message: Message): boolean {
+    if (!this.enabled) return false;
     const conn = this.connection;
     if (!conn?.is_open()) {
       this.logger.warn(`publish to '${address}' dropped — connection not open`);
-      return;
+      return false;
     }
     const sender = this.getOrCreateSender(conn, this.toBrokerAddress(address));
     sender.send(toRheaOutgoing(message));
+    return true;
+  }
+
+  stop(): void {
+    if (!this.enabled) return;
+    this.logger.log('shutting down');
+    this.senders.forEach((sender) => {
+      if (sender.is_open()) sender.close();
+    });
+    this.senders.clear();
+    if (this.replyReceiver?.is_open()) this.replyReceiver.close();
+    if (this.connection?.is_open()) this.connection.close();
+    this.connectedSubject.complete();
+    this.replyAddressSubject.complete();
+    this.repliesSubject.complete();
   }
 
   private openReplyReceiver(conn: Connection): void {
@@ -235,32 +294,60 @@ export class AmqpClient implements OnModuleInit, OnModuleDestroy {
     return sender;
   }
 
-  onModuleDestroy(): void {
-    if (!this.options.enabled) return;
-    this.logger.log('shutting down');
-    this.senders.forEach((sender) => {
-      if (sender.is_open()) sender.close();
-    });
-    this.senders.clear();
-    if (this.replyReceiver?.is_open()) this.replyReceiver.close();
-    if (this.connection?.is_open()) this.connection.close();
-    this.connectedSubject.complete();
-    this.replyAddressSubject.complete();
-    this.repliesSubject.complete();
-  }
-
   /**
    * Normalise a user-facing address (a bare name) to the broker-specific
-   * scheme. With `autoPrefixQueues: true` (default), bare names become
-   * `/queues/<name>` (RabbitMQ 4.x v2 addressing). Already-prefixed
-   * addresses (`/queues/...`, `/exchanges/...`, `/topic/...`) always pass
-   * through unchanged.
+   * scheme. RabbitMQ 4.x rejects bare names (`amqp_address_v1_not_permitted`)
+   * and requires the v2 scheme `/queues/<name>`, `/exchanges/...`, `/topic/...`.
+   * Artemis, Qpid and Azure Service Bus accept bare names directly.
+   *
+   * We auto-detect via the peer's `product` (see {@link brand}) — the brand
+   * is known by the time we reach this point (see lifecycle notes on
+   * {@link messages$} and {@link publish}). Already-prefixed addresses
+   * (starting with `/`) always pass through unchanged, which is the escape
+   * hatch for any setup where the heuristic doesn't fit (custom proxy,
+   * Pulsar via the AMQP proxy, etc.).
    */
   private toBrokerAddress(address: string): string {
-    if (!this.options.autoPrefixQueues) return address;
     if (address.startsWith('/')) return address;
-    return `/queues/${address}`;
+    if (this.brandDetected === 'rabbitmq') return `/queues/${address}`;
+    return address;
   }
+
+  private detectBrand(conn: Connection): void {
+    const properties = readPeerProperties(conn);
+    if (!properties) {
+      this.brandDetected = 'unknown';
+      return;
+    }
+    const product = typeof properties.product === 'string' ? properties.product : undefined;
+    const version = typeof properties.version === 'string' ? properties.version : undefined;
+    this.brandProduct = product;
+    this.brandVersion = version;
+    if (!product) {
+      this.brandDetected = 'unknown';
+      return;
+    }
+    const lower = product.toLowerCase();
+    if (lower.includes('rabbitmq')) this.brandDetected = 'rabbitmq';
+    else if (lower.includes('artemis')) this.brandDetected = 'artemis';
+    else if (lower.includes('service bus') || lower.includes('servicebus') || lower.includes('azure'))
+      this.brandDetected = 'azure-service-bus';
+    else if (lower.includes('qpid')) this.brandDetected = 'qpid';
+    else this.brandDetected = 'unknown';
+  }
+}
+
+/** Try a few possible locations rhea may expose the peer's Open frame
+ *  properties under. Best effort — returns undefined if none match. */
+function readPeerProperties(conn: Connection): Record<string, unknown> | undefined {
+  const c = conn as unknown as Record<string, unknown>;
+  const remote = c.remote as { open?: { properties?: Record<string, unknown> } } | undefined;
+  if (remote?.open?.properties && typeof remote.open.properties === 'object') return remote.open.properties;
+  const remoteProperties = c.remote_properties as Record<string, unknown> | undefined;
+  if (remoteProperties && typeof remoteProperties === 'object') return remoteProperties;
+  const properties = c.properties as Record<string, unknown> | undefined;
+  if (properties && typeof properties === 'object') return properties;
+  return undefined;
 }
 
 /** Build the AMQP 1.0 filter set positioning a stream consumer at the given

@@ -58,7 +58,10 @@ function resolveObjectIdCtor(): ((hex: string) => unknown) | undefined {
   for (const pkg of ['mongoose', 'bson'] as const) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const mod = require(pkg) as { Types?: { ObjectId?: new (hex: string) => unknown }; ObjectId?: new (hex: string) => unknown };
+      const mod = require(pkg) as {
+        Types?: { ObjectId?: new (hex: string) => unknown };
+        ObjectId?: new (hex: string) => unknown;
+      };
       const Ctor = pkg === 'mongoose' ? mod.Types?.ObjectId : mod.ObjectId;
       if (typeof Ctor === 'function') return (hex: string): unknown => new Ctor(hex);
     } catch {
@@ -153,8 +156,9 @@ export class JsonBodyCodec implements AmqpBodyCodec {
   }
 }
 
-/** Singleton instance of the default codec. The library uses this when no
- *  custom codec is supplied via options. */
+/** Singleton instance of the default codec. The library uses this when a
+ *  broker is declared without a `bodyCodec` override. Per-broker codecs are
+ *  resolved by `BrokerConnection` from `BrokerOptions.bodyCodec`. */
 export const defaultBodyCodec: AmqpBodyCodec = new JsonBodyCodec();
 
 /** Duck-type check for ObjectId instances from mongoose / bson without
@@ -174,27 +178,4 @@ function safeJsonParse(text: string): unknown {
   } catch {
     return text;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Convenience free functions — used internally so call sites don't have to
-// inject a codec themselves. They delegate to the codec resolved at module
-// init time (set via `setActiveBodyCodec`). The injection token approach is
-// avoided here to keep `body-codec.ts` zero-dependency.
-// ---------------------------------------------------------------------------
-
-let activeCodec: AmqpBodyCodec = defaultBodyCodec;
-
-/** Internal — called by `AmqpModule.forRoot/forRootAsync` after options
- *  resolution. Not exported via the public barrel. */
-export function setActiveBodyCodec(codec: AmqpBodyCodec | undefined): void {
-  activeCodec = codec ?? defaultBodyCodec;
-}
-
-export function encodeBody(value: unknown): unknown {
-  return activeCodec.encode(value);
-}
-
-export function decodeBody(body: unknown): unknown {
-  return activeCodec.decode(body);
 }

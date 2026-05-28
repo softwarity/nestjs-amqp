@@ -53,6 +53,8 @@ export interface HeldMessage {
 export interface DlqSession {
   /** UUID v4 — opaque session identifier passed in URL paths. */
   readonly token: string;
+  /** Name of the broker the DLQ lives on — needed for replay/drop routing. */
+  readonly brokerName: string;
   /** Address of the DLQ being browsed. */
   readonly dlqAddress: string;
   /** Login of the admin who opened it (caller-provided). */

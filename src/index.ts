@@ -3,12 +3,23 @@ export {
   type AmqpModuleOptions,
   type AmqpModuleAsyncOptions,
   type AmqpOptionsFactory,
+  type BrokerOptions,
   type ResolvedAmqpModuleOptions,
+  type ResolvedBrokerOptions,
   AMQP_MODULE_OPTIONS,
 } from './amqp.options';
 
-export { AmqpClient } from './amqp.client';
-export { Subscribe, SubscribeTopic, AMQP_SUBSCRIBE_METADATA } from './subscribe.decorator';
+// Multi-broker primitives. `BrokerRegistry` is exposed so advanced users can
+// reach a specific broker imperatively (e.g. dual-write across brokers);
+// `BrokerConnection` and `BrokerPublisher` are exported as TYPES only — they
+// are constructed by the registry, not by user code.
+export { BrokerRegistry } from './broker-registry';
+export { type BrokerConnection, type BrokerBrand } from './broker-connection';
+export { type BrokerPublisher } from './broker-publisher';
+
+export { AmqpDestinations } from './amqp.destinations';
+
+export { Consume, Subscribe, AMQP_CONSUMER_METADATA } from './consumers.decorator';
 export { AmqpQueue, AmqpTopic } from './amqp.queue';
 
 export {
@@ -46,10 +57,12 @@ export {
 export type {
   AmqpParamKind,
   AmqpParamMeta,
+  ConsumeOptions,
+  ConsumerMetadata,
   EmitOptions,
+  ResolvedConsumerOptions,
+  RetryPolicy,
   SendOptions,
-  SubscribeMetadata,
   SubscribeOptions,
-  SubscribeTopicOptions,
 } from './amqp.types';
 export type { DlqSession, HeldMessage, XDeath } from './dlq-browser.types';
