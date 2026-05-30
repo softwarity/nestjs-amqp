@@ -1,6 +1,12 @@
 @use '@angular/material' as mat;
 @use 'styles/prism-catppuccin-mocha';
 
+// Material Symbols (latest icon font) variable-axis defaults.
+// Icons render at 18px in the UI, so use the smallest optical size for crispness.
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+}
+
 // Material 3 Theme — violet palette to match Softwarity look
 html {
   @include mat.theme((color: mat.$violet-palette));

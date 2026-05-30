@@ -1,6 +1,6 @@
-import { Component, CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
+import { Component, CUSTOM_ELEMENTS_SCHEMA, inject } from '@angular/core';
 import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
-import { MatIconModule } from '@angular/material/icon';
+import { MatIconModule, MatIconRegistry } from '@angular/material/icon';
 
 interface DocLink {
   path: string;
@@ -16,6 +16,11 @@ interface DocLink {
   styleUrl: './app.component.scss',
 })
 export class AppComponent {
+  constructor() {
+    // Use the latest Material Symbols font instead of the legacy Material Icons
+    inject(MatIconRegistry).setDefaultFontSetClass('material-symbols-outlined');
+  }
+
   protected readonly links: DocLink[] = [
     { path: '/', label: 'Getting started', icon: 'rocket_launch' },
     { path: '/configuration', label: 'Configuration', icon: 'settings' },
