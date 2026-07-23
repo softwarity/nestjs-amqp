@@ -1,7 +1,7 @@
 # @softwarity/nestjs-amqp
 
 [![npm version](https://img.shields.io/npm/v/@softwarity/nestjs-amqp.svg)](https://www.npmjs.com/package/@softwarity/nestjs-amqp)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-yellow.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Node](https://img.shields.io/node/v/@softwarity/nestjs-amqp.svg)](https://nodejs.org)
 [![Unit tests](https://github.com/softwarity/nestjs-amqp/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/unit-tests.yml)
 [![RabbitMQ](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-rabbitmq.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-rabbitmq.yml)
@@ -472,7 +472,7 @@ Default `JsonBodyCodec`:
 
 ## License
 
-MIT © François ACHACHE
+Apache-2.0 © François ACHACHE
 
 ## Contributing
 

@@ -26,7 +26,7 @@
     "type": "git",
     "url": "git+https://github.com/softwarity/nestjs-amqp.git"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "François ACHACHE <francois.achache@gmail.com>",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
