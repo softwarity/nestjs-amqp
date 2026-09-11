@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 1.0.0
+
 ### Changes
 
 - **Relicensed under Apache-2.0** (previously MIT), for its explicit patent grant — easier to adopt for companies whose legal teams pre-approve Apache over MIT. `LICENSE` and the `package.json` `license` field are updated; versions up to 0.3.4 stay MIT.
