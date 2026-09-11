@@ -12,6 +12,8 @@ npm test
 npm run build
 ```
 
+The test suites need **Node.js ≥ 24.9**: NestJS 12 ships as ESM only, and Jest loads it through its `require(esm)` support (the `test` scripts pass `--experimental-vm-modules` for you).
+
 ## Running against a real broker
 
 Start RabbitMQ 4.x locally (it ships AMQP 1.0 natively, no plugin needed):

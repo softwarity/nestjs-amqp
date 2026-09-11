@@ -2,6 +2,18 @@
 
 ## 0.3.5
 
+### Changes
+
+- **NestJS 12 support.** The `@nestjs/common` / `@nestjs/core` peer range is widened to `>=10.0.0 <13.0.0`. NestJS 12 ships as ESM only; the library stays CommonJS and loads it through Node's `require(esm)`, so with NestJS 12 the host app needs Node.js ≥ 20.19 or ≥ 22.12 (the same requirement NestJS 12 itself has for CommonJS apps). ESM host apps work too. No API change; NestJS 10 and 11 remain supported.
+
+- **Shutdown order under NestJS 12.** NestJS 12 calls lifecycle hooks by dependency level, so on `app.close()` the `DlqBrowserService` now releases its open DLQ sessions *before* `BrokerRegistry` closes the connections (NestJS 11 did it the other way round). Startup order is unchanged: brokers come up before consumers are wired.
+
+### Internal changes
+
+- Dev dependencies moved to NestJS 12 (`@nestjs/common`, `@nestjs/core`, `@nestjs/testing`, `@nestjs/swagger` `^12.0.1`) and Jest 30 (`jest`, `@types/jest` `^30`, `ts-jest` `^29.4`).
+- Jest can only load the ESM-only NestJS packages through its `require(esm)` support, which needs `--experimental-vm-modules` and Node.js ≥ 24.9. `npm test`, `test:watch`, `test:cov` and `test:integration` now run `node --experimental-vm-modules node_modules/jest/bin/jest.js`; running the test suites locally requires Node 24.9+.
+- CI workflows that run Jest (unit tests, publish, the three integration jobs) now use Node 24; the integration jobs call `npm run test:integration -- <spec>` instead of `npx jest`.
+
 ---
 
 ## 0.3.4 — Topology manifest refinements

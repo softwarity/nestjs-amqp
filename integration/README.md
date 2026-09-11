@@ -36,7 +36,7 @@ To skip the docker compose lifecycle (e.g. when iterating in your IDE):
 docker compose -f integration/docker-compose.yml up -d --wait
 
 # Run jest with the lifecycle disabled:
-SKIP_BROKER_SETUP=1 KEEP_BROKERS=1 npx jest --config integration/jest.config.js integration/specs/rabbitmq.spec.ts
+SKIP_BROKER_SETUP=1 KEEP_BROKERS=1 npm run test:integration -- integration/specs/rabbitmq.spec.ts
 ```
 
 ## What's covered

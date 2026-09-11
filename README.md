@@ -45,6 +45,8 @@ npm install @softwarity/nestjs-amqp rhea
 npm install @nestjs/common @nestjs/core rxjs reflect-metadata
 ```
 
+Works with NestJS 10, 11 and 12. NestJS 12 ships as ESM only; this library is CommonJS and loads it through Node's `require(esm)`, so with NestJS 12 you need Node.js ≥ 20.19 or ≥ 22.12 (ESM apps work too).
+
 ---
 
 # Getting started — the 90% case

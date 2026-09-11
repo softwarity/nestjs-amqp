@@ -25,8 +25,8 @@ import { CodeComponent } from '../code/code.component';
 
     <h3>Compatibility</h3>
     <ul>
-      <li>Node.js &ge; 20</li>
-      <li>NestJS &ge; 10 (tested with 10 and 11)</li>
+      <li>Node.js &ge; 20 (&ge; 20.19 or &ge; 22.12 with NestJS 12, which ships as ESM only)</li>
+      <li>NestJS &ge; 10 (tested with 10, 11 and 12)</li>
       <li>Brokers: RabbitMQ 4.x, ActiveMQ Artemis, Apache Qpid</li>
     </ul>
 
