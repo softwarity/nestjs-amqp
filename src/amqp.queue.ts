@@ -1,3 +1,5 @@
+import { Inject } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import type { Observable } from 'rxjs';
 import type { BrokerPublisher } from './broker-publisher';
 import type { BrokerRegistry } from './broker-registry';
@@ -103,6 +105,34 @@ function resolvePublisher(decoratorName: string, address: string, brokerName: st
   return registryRef.resolvePublisher(brokerName);
 }
 
+/**
+ * Keep the prototype accessor reachable on instances Nest creates.
+ *
+ * With `useDefineForClassFields` — TypeScript's default from `target: ES2022`,
+ * so every NestJS 11+ project — `private readonly orders!: AmqpQueue<T>`
+ * compiles to a class field: the constructor defines an own `orders =
+ * undefined` on the instance, in front of the accessor. A property decorator
+ * gets no hook after construction, but Nest's property injection does — it
+ * assigns injected properties right after `new`. So a dependency is declared
+ * under a private symbol whose setter only drops that shadowing field.
+ * `ModuleRef` is the token because every module provides it: this never adds
+ * a resolution failure, with or without `AmqpModule`.
+ */
+function unshadowAfterConstruction(target: object, propertyKey: string | symbol): void {
+  const hookKey = Symbol(`amqp:unshadow:${String(propertyKey)}`);
+  Object.defineProperty(target, hookKey, {
+    configurable: true,
+    set(this: object) {
+      const own = Object.getOwnPropertyDescriptor(this, propertyKey);
+      // A value the accessor already memoised is kept; only the empty field goes.
+      if (own && 'value' in own && own.value === undefined) {
+        delete (this as Record<string | symbol, unknown>)[propertyKey];
+      }
+    },
+  });
+  Inject(ModuleRef)(target, hookKey);
+}
+
 // ---------------------------------------------------------------------------
 // Property decorators
 // ---------------------------------------------------------------------------
@@ -115,6 +145,11 @@ function resolvePublisher(decoratorName: string, address: string, brokerName: st
  * `brokerName` is optional when a single broker is configured — the lone
  * broker is resolved automatically. With several brokers, omitting
  * `brokerName` throws at first access.
+ *
+ * Works whatever `useDefineForClassFields` is on instances Nest creates
+ * (providers, controllers, any scope). On an object built by hand with `new`,
+ * a class field hides the handle when that option is on — inject
+ * {@link AmqpDestinations} there instead.
  *
  * Usage:
  * ```ts
@@ -143,6 +178,7 @@ export function AmqpQueue(address: string, brokerName?: string): PropertyDecorat
         return handle;
       },
     });
+    unshadowAfterConstruction(target, propertyKey);
   };
 }
 
@@ -179,5 +215,6 @@ export function AmqpTopic(address: string, brokerName?: string): PropertyDecorat
         return handle;
       },
     });
+    unshadowAfterConstruction(target, propertyKey);
   };
 }

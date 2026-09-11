@@ -91,7 +91,9 @@ import { CodeComponent } from '../code/code.component';
       Property decorators (<code>&#64;AmqpQueue</code>, <code>&#64;AmqpTopic</code>) resolve their
       publisher lazily on first property access, via a module-level singleton registered by
       <code>BrokerRegistry</code>'s constructor — so it's safe to call from <code>OnModuleInit</code> /
-      <code>OnApplicationBootstrap</code> and beyond.
+      <code>OnApplicationBootstrap</code> and beyond. They work on any instance Nest creates, whatever
+      <code>useDefineForClassFields</code> is (on by default from <code>target: ES2022</code>); on an
+      object built by hand with <code>new</code>, inject <code>AmqpDestinations</code> instead.
     </p>
 
     <h3>Boot without broker</h3>

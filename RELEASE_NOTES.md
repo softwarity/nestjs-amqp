@@ -10,8 +10,13 @@
 
 - **Shutdown order under NestJS 12.** NestJS 12 calls lifecycle hooks by dependency level, so on `app.close()` the `DlqBrowserService` now releases its open DLQ sessions *before* `BrokerRegistry` closes the connections (NestJS 11 did it the other way round). Startup order is unchanged: brokers come up before consumers are wired.
 
+### Fixes
+
+- **`@AmqpQueue` / `@AmqpTopic` properties were `undefined`** in projects compiled with `target: ES2022` or later, which includes the NestJS 11 and 12 project templates (`ES2023`). There, TypeScript's `useDefineForClassFields` turns `private readonly orders!: AmqpQueue<T>` into a class field that hides the decorator's accessor, so `this.orders.emit()` threw `Cannot read properties of undefined`. The decorators now remove that field right after Nest builds the instance (providers, controllers, any scope), whatever the compiler options — no change needed in your code. An object built by hand with `new` still gets the class field: inject `AmqpDestinations` there.
+
 ### Internal changes
 
+- `test/amqp.queue.spec.ts` covers both property decorators on Nest-built providers and controllers, with the project's own `ES2022` target reproducing the shadowing field.
 - Dev dependencies moved to NestJS 12 (`@nestjs/common`, `@nestjs/core`, `@nestjs/testing`, `@nestjs/swagger` `^12.0.1`) and Jest 30 (`jest`, `@types/jest` `^30`, `ts-jest` `^29.4`).
 - Jest can only load the ESM-only NestJS packages through its `require(esm)` support, which needs `--experimental-vm-modules` and Node.js ≥ 24.9. `npm test`, `test:watch`, `test:cov` and `test:integration` now run `node --experimental-vm-modules node_modules/jest/bin/jest.js`; running the test suites locally requires Node 24.9+.
 - CI workflows that run Jest (unit tests, publish, the three integration jobs) now use Node 24; the integration jobs call `npm run test:integration -- <spec>` instead of `npx jest`.
