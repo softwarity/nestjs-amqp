@@ -34,14 +34,14 @@ Declare the queues you intend to use (a stream for replies, work queues for your
 
 ## Releasing
 
-Releases are tag-driven via GitHub Actions.
+Releases go through the [`softwarity/release-flow`](https://github.com/softwarity/release-flow) action. Never bump the version or write a version heading by hand.
 
-1. Bump the version in `package.json` and update `CHANGELOG.md`.
-2. Commit: `git commit -am "chore: release vX.Y.Z"`
-3. Tag: `git tag vX.Y.Z`
-4. Push: `git push && git push --tags`
+1. Describe every change under `## NEXT RELEASE` in `RELEASE_NOTES.md`.
+2. **Actions → Create Tag/Release → Run workflow**, then pick `patch` / `minor` / `major`.
+3. The workflow checks the npm token, lints, tests and builds. Then release-flow bumps `package.json`, renames `## NEXT RELEASE` to the new version, tags `vX.Y.Z`, publishes the GitHub Release from those notes and reopens an empty `## NEXT RELEASE`.
+4. The tag triggers `tag.yml`, which lints, tests, builds and runs `npm publish`.
 
-The `release.yml` workflow runs `npm publish --provenance --access public` and creates a GitHub release with auto-generated notes.
+The tag is pushed with the `PAT_TOKEN` secret: a push made with the default `GITHUB_TOKEN` would not trigger `tag.yml`.
 
 ### npm token
 
