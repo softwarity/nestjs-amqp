@@ -101,6 +101,14 @@ export interface EmitOptions {
   readonly applicationProperties?: Record<string, unknown>;
 }
 
+/** Options accepted by publishers' `emitConfirmed()` — `emit()` options plus
+ *  the guard delay, which only makes sense when someone waits for a verdict. */
+export interface EmitConfirmedOptions extends EmitOptions {
+  /** Override the broker's `confirmTimeoutMs` for this call. Covers the whole
+   *  wait: getting credit on the link, then the broker's verdict. */
+  readonly timeoutMs?: number;
+}
+
 /** Internal: what the consumer-explorer hands to the per-message router. */
 export interface IncomingMessage {
   readonly address: string;

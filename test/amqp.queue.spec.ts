@@ -1,7 +1,9 @@
 import 'reflect-metadata';
 import { Controller, Injectable } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
+import { firstValueFrom } from 'rxjs';
 import { AmqpModule } from '../src/amqp.module';
+import { AmqpPublishError } from '../src/amqp.errors';
 import { AmqpQueue, AmqpTopic } from '../src/amqp.queue';
 
 // Plain `!` fields, exactly as the README declares them. This project compiles
@@ -57,6 +59,17 @@ describe('@AmqpQueue / @AmqpTopic property decorators', () => {
 
     it('binds @AmqpQueue on a controller', () => {
       expect(mod.get(OrdersController).orders?.emit({ id: '1' })).toBe(false);
+    });
+
+    it('binds emitConfirmed on both handles', async () => {
+      const { orders, events } = mod.get(OrdersService);
+      // Disabled broker: the confirmed publish must say so rather than let
+      // the caller believe in a delivery that never happened.
+      for (const handle of [orders, events]) {
+        const err: unknown = await firstValueFrom(handle.emitConfirmed({ id: '1' })).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(AmqpPublishError);
+        expect((err as AmqpPublishError).outcome).toBe('unsent');
+      }
     });
 
     it('memoises the handle per instance', () => {

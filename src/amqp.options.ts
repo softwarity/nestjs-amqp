@@ -52,6 +52,16 @@ export interface BrokerOptions {
   readonly defaultSendTimeoutMs?: number;
 
   /**
+   * Guard delay for `emitConfirmed()` in ms — how long to wait for the
+   * broker's delivery verdict (and, before that, for the link to get
+   * credit). Defaults to `defaultSendTimeoutMs`, so a single knob still
+   * covers both by default. Set it lower than the reply timeout when you
+   * want a publisher to give up quickly: a delivery verdict is a broker
+   * round-trip, not an application round-trip. Ignored by `emit()`.
+   */
+  readonly confirmTimeoutMs?: number;
+
+  /**
    * Address of the shared reply stream used by request/reply (`send()`) on
    * this broker. **Must be pre-declared broker-side as a stream queue.**
    * Optional — if absent, `send()` on this broker throws
@@ -104,6 +114,7 @@ export interface ResolvedBrokerOptions {
   readonly maxReconnectDelayMs: number;
   readonly idleTimeoutMs: number;
   readonly defaultSendTimeoutMs: number;
+  readonly confirmTimeoutMs: number;
   readonly replyStreamAddress?: string;
   readonly defaultDlqAddress?: string;
   readonly bodyCodec?: AmqpBodyCodec;
@@ -199,6 +210,7 @@ export function resolveAmqpOptions(opts: SingleBrokerOptions | BrokerOptions[]):
       maxReconnectDelayMs: broker.maxReconnectDelayMs ?? 30000,
       idleTimeoutMs: broker.idleTimeoutMs ?? 60000,
       defaultSendTimeoutMs: broker.defaultSendTimeoutMs ?? 30000,
+      confirmTimeoutMs: broker.confirmTimeoutMs ?? broker.defaultSendTimeoutMs ?? 30000,
       replyStreamAddress: broker.replyStreamAddress,
       defaultDlqAddress: broker.defaultDlqAddress,
       bodyCodec: broker.bodyCodec,

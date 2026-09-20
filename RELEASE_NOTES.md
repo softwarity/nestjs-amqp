@@ -2,6 +2,24 @@
 
 ## NEXT RELEASE
 
+### Changes
+
+- **Confirmed publish — `emitConfirmed()`.** New method on `AmqpQueue<T>` and `AmqpTopic<T>` (decorators and `AmqpDestinations` alike): it publishes and returns an `Observable<void>` that completes only once the broker **accepted** the delivery, and errors with the new `AmqpPublishError` otherwise. Until now a message that matched no queue — the most common topology mistake — left without a trace, because `emit()` returns as soon as rhea's sender takes it. The mental model: *`emit()`, I don't want to know; `emitConfirmed()`, tell me what the broker did with it*. Not to be confused with `send()`, which waits for an application **reply**; `emitConfirmed()` waits for a delivery **verdict** and needs neither a reply stream nor a consumer.
+
+  The error's `outcome` discriminates the failure: `released` (routed to no queue), `rejected` (a queue refused it — carries the AMQP `condition` / `description`), `modified`, plus three cases that never reach the broker and so can never be mistaken for a success: `unsent` (broker disabled, connection not open, link failed), `disconnected` and `timeout`.
+
+  `emit()` is unchanged — still synchronous, still a boolean, still fire-and-forget. This adds a method, it modifies none.
+
+- **New broker option `confirmTimeoutMs`** — guard delay for `emitConfirmed()`, overridable per call with `{ timeoutMs }`. Defaults to `defaultSendTimeoutMs` (30s), so nothing to configure to get started; set it lower when a publisher should give up quickly, since a delivery verdict is a broker round-trip rather than an application one. When the link has no credit yet (normal right after connecting, or under broker flow control), the message is held back instead of being handed to rhea — that wait is part of the same delay, and it keeps the guarantee that a failed confirm means nothing was published.
+
+- **`released` deliveries are now logged at `warn`**, next to the `rejected` ones, for every publish including `emit()`. A one-liner that saves hours on a wrong routing key.
+
+### Internal changes
+
+- Senders are opened with rhea's `treat_modified_as_released: false`, so the four AMQP 1.0 delivery outcomes map one-to-one onto the events the library listens to (rhea re-dispatches `modified` as `released` by default).
+- A link failure (`sender_error` — unknown address, revoked permission) now fails the confirmed publishes that link was carrying, instead of leaving them to hit the guard delay. Same for `disconnected` and for shutdown.
+- `test/publish-confirmed.spec.ts` covers the four outcomes, the credit wait, link failure, disconnect, shutdown, the guard delay, the cold-Observable semantics, and `emit()` non-regression, against a simulated rhea sender.
+
 ---
 
 ## 1.0.0

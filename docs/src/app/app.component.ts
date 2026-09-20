@@ -27,6 +27,7 @@ export class AppComponent {
     { path: '/publishers', label: 'Publishers', icon: 'send' },
     { path: '/consumers', label: 'Consumers', icon: 'inbox' },
     { path: '/request-reply', label: 'Request / reply', icon: 'swap_horiz' },
+    { path: '/confirmed-publish', label: 'Confirmed publish', icon: 'fact_check' },
     { path: '/retry-and-dlq', label: 'Retry & DLQ', icon: 'replay' },
     { path: '/multi-broker', label: 'Multi-broker', icon: 'hub' },
     { path: '/parameter-decorators', label: 'Parameter decorators', icon: 'tune' },

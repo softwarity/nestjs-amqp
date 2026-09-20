@@ -1,9 +1,9 @@
 import { Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Observable, Subject, type Subscription, throwError } from 'rxjs';
+import { defer, Observable, Subject, type Subscription, throwError } from 'rxjs';
 import { finalize, switchMap, take, timeout } from 'rxjs/operators';
-import { AmqpConnectionError, AmqpTimeoutError } from './amqp.errors';
-import type { EmitOptions, IncomingMessage, SendOptions } from './amqp.types';
+import { AmqpConnectionError, AmqpPublishError, AmqpTimeoutError } from './amqp.errors';
+import type { EmitConfirmedOptions, EmitOptions, IncomingMessage, SendOptions } from './amqp.types';
 import type { BrokerConnection } from './broker-connection';
 
 /**
@@ -101,6 +101,48 @@ export class BrokerPublisher {
       properties: opts.properties,
       application_properties: opts.applicationProperties,
     });
+  }
+
+  /**
+   * Publish like {@link emit}, but report what the broker did with the
+   * message. The Observable emits once and completes when the broker
+   * **accepted** the delivery — every target queue took it — and errors with
+   * an `AmqpPublishError` otherwise: `released` (no queue matched the
+   * address / routing key), `rejected`, `modified`, a link failure, a
+   * disconnect, a broker that is disabled or not connected, or no verdict
+   * within `opts.timeoutMs` (default: the broker's `confirmTimeoutMs`).
+   *
+   * Cold, like `send()`: nothing is published until something subscribes,
+   * and each subscription publishes once.
+   *
+   * Not to be confused with `send()`: this waits for a **delivery verdict**
+   * from the broker, `send()` waits for an **application reply** from a
+   * consumer.
+   */
+  emitConfirmed(address: string, payload: unknown, opts: EmitConfirmedOptions = {}): Observable<void> {
+    const timeoutMs = opts.timeoutMs ?? this.broker.options.confirmTimeoutMs;
+    // `defer` keeps body encoding inside the subscription, so a codec that
+    // throws errors the Observable instead of the call site.
+    return defer(() =>
+      this.broker.publishConfirmed(address, {
+        body: this.broker.encodeBody(payload),
+        properties: opts.properties,
+        application_properties: opts.applicationProperties,
+      }),
+    ).pipe(
+      timeout({
+        each: timeoutMs,
+        with: () =>
+          throwError(
+            () =>
+              new AmqpPublishError(
+                address,
+                'timeout',
+                `no delivery verdict from the broker after ${timeoutMs}ms`,
+              ),
+          ),
+      }),
+    );
   }
 
   private routeReply(incoming: IncomingMessage): void {

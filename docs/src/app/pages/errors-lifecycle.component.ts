@@ -42,6 +42,15 @@ import { CodeComponent } from '../code/code.component';
             <code>correlationId</code>, <code>timeoutMs</code>.</td>
         </tr>
         <tr>
+          <td><code>AmqpPublishError</code></td>
+          <td><code>emitConfirmed()</code> Observable when the broker didn't take the message. Carries
+            <code>address</code>, <code>outcome</code>
+            (<code>released</code> / <code>rejected</code> / <code>modified</code> / <code>unsent</code> /
+            <code>disconnected</code> / <code>timeout</code>), <code>reason</code>, and the AMQP
+            <code>condition</code> / <code>description</code> when the broker reported one. See
+            <a routerLink="/confirmed-publish">Confirmed publish</a>.</td>
+        </tr>
+        <tr>
           <td><code>AmqpHandlerError</code></td>
           <td>Reserved for future use; not currently thrown internally.</td>
         </tr>

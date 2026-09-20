@@ -3,7 +3,7 @@ import { ModuleRef } from '@nestjs/core';
 import type { Observable } from 'rxjs';
 import type { BrokerPublisher } from './broker-publisher';
 import type { BrokerRegistry } from './broker-registry';
-import type { EmitOptions, SendOptions } from './amqp.types';
+import type { EmitConfirmedOptions, EmitOptions, SendOptions } from './amqp.types';
 
 // ---------------------------------------------------------------------------
 // Public types — co-located with their decorators so the barrel can re-export
@@ -30,6 +30,16 @@ export interface AmqpQueue<T = unknown> {
    *  (broker disabled or not connected) — caller can then fall back to an
    *  in-process bus, a local outbox, etc. */
   emit(payload: T, options?: EmitOptions): boolean;
+  /** Publish and wait for the broker's verdict on the delivery. Emits once
+   *  and completes when the broker **accepted** the message; errors with
+   *  `AmqpPublishError` on `released` (no queue matched), `rejected`,
+   *  `modified`, a link failure, a disconnect, a disabled or disconnected
+   *  broker, or no verdict within the confirm timeout.
+   *
+   *  Mental model: `emit()` — I don't want to know; `emitConfirmed()` — tell
+   *  me what the broker did with it. Distinct from {@link send}, which waits
+   *  for an application **reply**, not a delivery verdict. */
+  emitConfirmed(payload: T, options?: EmitConfirmedOptions): Observable<void>;
 }
 
 /** Publish handle for a **topic** (stream-backed broadcast). Only exposes
@@ -45,6 +55,10 @@ export interface AmqpTopic<T = unknown> {
    *  was dropped (broker disabled or not connected) — caller can then fall
    *  back to an in-process bus, a local outbox, etc. */
   emit(payload: T, options?: EmitOptions): boolean;
+  /** Broadcast and wait for the broker's verdict on the delivery. Same
+   *  semantics as {@link AmqpQueue.emitConfirmed}: completes on `accepted`,
+   *  errors with `AmqpPublishError` on anything else. */
+  emitConfirmed(payload: T, options?: EmitConfirmedOptions): Observable<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +93,10 @@ class BoundAmqpQueue implements AmqpQueue<unknown> {
   emit(payload: unknown, options?: EmitOptions): boolean {
     return this.publisher.emit(this.address, payload, options);
   }
+
+  emitConfirmed(payload: unknown, options?: EmitConfirmedOptions): Observable<void> {
+    return this.publisher.emitConfirmed(this.address, payload, options);
+  }
 }
 
 class BoundAmqpTopic implements AmqpTopic<unknown> {
@@ -89,6 +107,10 @@ class BoundAmqpTopic implements AmqpTopic<unknown> {
 
   emit(payload: unknown, options?: EmitOptions): boolean {
     return this.publisher.emit(this.address, payload, options);
+  }
+
+  emitConfirmed(payload: unknown, options?: EmitConfirmedOptions): Observable<void> {
+    return this.publisher.emitConfirmed(this.address, payload, options);
   }
 }
 

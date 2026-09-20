@@ -36,7 +36,14 @@ export {
   AMQP_PARAMS_METADATA,
 } from './amqp.param-decorators';
 
-export { AmqpError, AmqpConnectionError, AmqpHandlerError, AmqpTimeoutError } from './amqp.errors';
+export {
+  AmqpError,
+  AmqpConnectionError,
+  AmqpHandlerError,
+  AmqpPublishError,
+  AmqpTimeoutError,
+  type AmqpPublishFailure,
+} from './amqp.errors';
 
 export { type AmqpBodyCodec, JsonBodyCodec, defaultBodyCodec } from './body-codec';
 
@@ -59,6 +66,7 @@ export type {
   AmqpParamMeta,
   ConsumeOptions,
   ConsumerMetadata,
+  EmitConfirmedOptions,
   EmitOptions,
   ResolvedConsumerOptions,
   RetryPolicy,

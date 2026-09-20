@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { AmqpQueue, AmqpTopic } from './amqp.queue';
-import type { EmitOptions, SendOptions } from './amqp.types';
+import type { EmitConfirmedOptions, EmitOptions, SendOptions } from './amqp.types';
 import type { BrokerPublisher } from './broker-publisher';
 import { BrokerRegistry } from './broker-registry';
 import type { Observable } from 'rxjs';
@@ -55,6 +55,10 @@ class LocatedAmqpQueue<T> implements AmqpQueue<T> {
   emit(payload: T, options?: EmitOptions): boolean {
     return this.publisher.emit(this.address, payload, options);
   }
+
+  emitConfirmed(payload: T, options?: EmitConfirmedOptions): Observable<void> {
+    return this.publisher.emitConfirmed(this.address, payload, options);
+  }
 }
 
 class LocatedAmqpTopic<T> implements AmqpTopic<T> {
@@ -65,5 +69,9 @@ class LocatedAmqpTopic<T> implements AmqpTopic<T> {
 
   emit(payload: T, options?: EmitOptions): boolean {
     return this.publisher.emit(this.address, payload, options);
+  }
+
+  emitConfirmed(payload: T, options?: EmitConfirmedOptions): Observable<void> {
+    return this.publisher.emitConfirmed(this.address, payload, options);
   }
 }

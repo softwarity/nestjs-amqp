@@ -166,7 +166,7 @@ export class OrdersListener &#123;
     </p>
 
     <h3>What's NOT in the 90% case</h3>
-    <p>The bootstrap above intentionally skips three optional features. Add them à la carte as needed:</p>
+    <p>The bootstrap above intentionally skips a few optional features. Add them à la carte as needed:</p>
     <table>
       <thead><tr><th>Feature</th><th>What you gain</th><th>What you have to do</th></tr></thead>
       <tbody>
@@ -174,6 +174,11 @@ export class OrdersListener &#123;
           <td><a routerLink="/request-reply">Request / reply (<code>send()</code>)</a></td>
           <td>Wait for a reply Observable on a published message — RPC-style.</td>
           <td>Declare a stream queue broker-side, add <code>replyStreamAddress</code> to the broker config.</td>
+        </tr>
+        <tr>
+          <td><a routerLink="/confirmed-publish">Confirmed publish (<code>emitConfirmed()</code>)</a></td>
+          <td>Know whether the broker actually took the message, instead of trusting an optimistic boolean.</td>
+          <td>Nothing — subscribe to the returned Observable instead of reading <code>emit()</code>'s boolean.</td>
         </tr>
         <tr>
           <td><a routerLink="/retry-and-dlq">Retry &amp; DLQ</a></td>

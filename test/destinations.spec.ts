@@ -18,6 +18,7 @@ describe('AmqpDestinations', () => {
       const queue = amqp.queue<{ id: string }>('orders');
       expect(queue).toBeDefined();
       expect(typeof queue.emit).toBe('function');
+      expect(typeof queue.emitConfirmed).toBe('function');
       expect(typeof queue.send).toBe('function');
     });
 
@@ -26,6 +27,7 @@ describe('AmqpDestinations', () => {
       const topic = amqp.topic<{ id: string }>('events');
       expect(topic).toBeDefined();
       expect(typeof topic.emit).toBe('function');
+      expect(typeof topic.emitConfirmed).toBe('function');
     });
   });
 

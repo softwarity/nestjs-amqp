@@ -1,6 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { firstValueFrom } from 'rxjs';
-import { AmqpDestinations, AmqpModule } from '../../src';
+import { AmqpDestinations, AmqpModule, AmqpPublishError } from '../../src';
 import { TestHandlersModule } from '../fixtures/test-handlers';
 import { received, resetTestState } from '../fixtures/test-state';
 import { waitForAllBrokersReady } from '../fixtures/wait-ready';
@@ -95,5 +95,26 @@ describe('RabbitMQ — single broker scenarios', () => {
     const next = firstValueFrom(received.locator);
     expect(amqp.queue('integ.simple-locator').emit({ via: 'locator' })).toBe(true);
     expect(await next).toEqual({ via: 'locator' });
+  });
+
+  it('8. emitConfirmed — the broker accepts and the consumer gets the message', async () => {
+    const next = firstValueFrom(received.simple);
+    await expect(firstValueFrom(amqp.queue('integ.simple').emitConfirmed({ confirmed: true }))).resolves.toBeUndefined();
+    expect(await next).toEqual({ confirmed: true });
+  });
+
+  // Kept last: the failing attach leaves a dead link behind on the connection.
+  it('9. emitConfirmed — an address nothing is bound to surfaces an error', async () => {
+    const err: unknown = await firstValueFrom(
+      amqp.queue('integ.nowhere-at-all').emitConfirmed({ lost: true }, { timeoutMs: 10_000 }),
+    ).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AmqpPublishError);
+    // RabbitMQ 4.x refuses the link attach on an unknown queue ('unsent');
+    // a broker that accepts the attach and drops the message answers
+    // 'released'. Either way the caller is told, which is the whole point.
+    expect(['unsent', 'released']).toContain((err as AmqpPublishError).outcome);
+    // ... and emit() on the same address still returns its optimistic true.
+    expect(amqp.queue('integ.nowhere-at-all').emit({ lost: true })).toBe(true);
   });
 });

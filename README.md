@@ -145,6 +145,8 @@ if (!this.orders.emit(body)) {
 
 Each handle is generic on the payload type — every call site is type-checked at compile time.
 
+`true` means *handed to the sender*, not *the broker took it*. When you need the broker's word before you commit to something on your side, use [`emitConfirmed()`](#confirmed-publish--emitconfirmed).
+
 ### 4. Consume
 
 ```ts
@@ -181,6 +183,7 @@ The bootstrap above intentionally skips three optional features. Add them à la 
 | Feature | What you gain | What you have to do |
 |---|---|---|
 | [Request / reply (`send()`)](#request--reply--opt-in) | Wait for a reply Observable — RPC-style. | Declare a stream queue broker-side, add `replyStreamAddress` to the broker config. |
+| [Confirmed publish (`emitConfirmed()`)](#confirmed-publish--emitconfirmed) | Know whether the broker actually took the message. | Nothing — subscribe to the returned Observable instead of reading `emit()`'s boolean. |
 | [Retry & DLQ](#retry--dlq--opt-in) | Auto-retry on handler error, then route the failed message to a DLQ. | Declare a DLX + DLQ broker-side, set `{ maxDelivery, dlq: true }` on the decorator. |
 | [Multiple brokers](#multi-broker) | Speak to several brokers from one service. | Pass an array to `forRoot`, pass `brokerName` on each decorator. |
 
@@ -236,6 +239,84 @@ The library generates a per-process correlation prefix at boot and filters incom
 Without `replyStreamAddress` set on the broker, `send()` throws `AmqpConnectionError` at the call site. `emit()` and `@Consume` continue to work unchanged.
 
 📚 Full details: [doc site → Request / reply](https://softwarity.github.io/nestjs-amqp/#/request-reply)
+
+---
+
+# Confirmed publish — `emitConfirmed()`
+
+**`emit()` — I don't want to know. `emitConfirmed()` — tell me what the broker did with it.**
+
+`emit()` returns as soon as the message is handed to the sender, so a message no queue is bound to leaves silently — the most common topology mistake there is. `emitConfirmed()` returns an Observable that completes only once the broker **accepted** the delivery, and errors with an `AmqpPublishError` otherwise:
+
+```ts
+import { AmqpPublishError } from '@softwarity/nestjs-amqp';
+
+@AmqpQueue('tasks.trigger')
+private readonly triggers!: AmqpQueue<TriggerBody>;
+
+fire(trigger: TriggerBody): Observable<void> {
+  return this.triggers.emitConfirmed(trigger);   // completes = the broker has it
+}
+```
+
+```ts
+this.triggers.emitConfirmed(trigger).subscribe({
+  next: () => this.schedule.advanceDueDate(trigger.id),   // safe: the broker took it
+  error: (err: AmqpPublishError) => this.logger.error(`${err.outcome}: ${err.message}`),
+});
+```
+
+The Observable is cold, like `send()`: nothing is published until something subscribes, and each subscription publishes once. It emits a single `void` and completes, so `firstValueFrom(...)` resolves.
+
+### Not the same thing as `send()`
+
+| | Waits for | Resolves when |
+|---|---|---|
+| `emit()` | nothing — returns a `boolean` synchronously | the message was handed to the sender |
+| `emitConfirmed()` | a **delivery verdict** from the broker | the broker took responsibility for the message |
+| `send()` | an **application reply** from a consumer | your consumer returned a value |
+
+`emitConfirmed()` needs no `replyStreamAddress` and no consumer: the verdict is an AMQP 1.0 disposition sent by the broker itself. It is available on `AmqpQueue<T>` **and** `AmqpTopic<T>`, from the decorators as well as from `AmqpDestinations`.
+
+### What the broker's verdicts mean
+
+| Outcome | Meaning (RabbitMQ) | Result |
+|---|---|---|
+| `accepted` | every target queue took the message — on a quorum queue, a majority of replicas wrote it to disk | completes |
+| `released` | the message was routed to **no** queue: wrong address, missing binding | errors, `outcome: 'released'` |
+| `rejected` | a target queue refused it: length limit reached, queue unavailable | errors, `outcome: 'rejected'`, AMQP `condition` carried |
+| `modified` | the broker asked for the message to be changed before redelivery (RabbitMQ doesn't use it publisher-side today) | errors, `outcome: 'modified'` |
+
+Three more failures never reach the broker at all and are reported the same way, so a caller can never mistake them for a success: `'unsent'` (broker disabled, connection not open, or the link failed), `'disconnected'` (the connection dropped before the verdict) and `'timeout'`.
+
+Which one you get for a **missing destination** depends on how the address resolves. On RabbitMQ 4.x a queue that doesn't exist fails the link attach, so it surfaces right away as `'unsent'` with `condition: 'amqp:not-found'` — verified against RabbitMQ 4.x in the integration suite. `'released'` is what you get when the address does resolve but nothing downstream takes the message, typically an exchange with no matching binding.
+
+```ts
+if (err instanceof AmqpPublishError && err.outcome === 'released') {
+  // nothing is bound to this address — a topology bug, not a transient failure
+}
+```
+
+`released` and `rejected` are also logged at `warn` level by the library, whichever method published the message.
+
+### The guard delay
+
+`emitConfirmed()` never waits forever. The delay covers the whole publish — getting credit on the link, then the broker's verdict:
+
+```ts
+AmqpModule.forRoot({
+  url: 'amqp://localhost',
+  confirmTimeoutMs: 5_000,        // default: defaultSendTimeoutMs (30s)
+});
+
+this.triggers.emitConfirmed(trigger, { timeoutMs: 2_000 });   // per call
+```
+
+A delivery verdict is a broker round-trip, not an application round-trip: set it well below the reply timeout when a publisher should give up quickly.
+
+When the link has no credit yet — normal right after connecting, or under broker flow control — the message is held back rather than handed to rhea, so a failed confirm always means nothing was published. That wait is part of the same guard delay.
+
+📚 Full details: [doc site → Confirmed publish](https://softwarity.github.io/nestjs-amqp/#/confirmed-publish)
 
 ---
 
@@ -376,8 +457,8 @@ Forgetting the broker name in a multi-broker setup throws clearly at boot.
 ### Decorators
 
 ```ts
-@AmqpQueue(address, brokerName?)        // Property → AmqpQueue<T> (emit + send)
-@AmqpTopic(address, brokerName?)        // Property → AmqpTopic<T> (emit only)
+@AmqpQueue(address, brokerName?)        // Property → AmqpQueue<T> (emit + emitConfirmed + send)
+@AmqpTopic(address, brokerName?)        // Property → AmqpTopic<T> (emit + emitConfirmed)
 
 @Consume(address, brokerName?, options?)        // Method, work-queue consumer
 @Subscribe(address, brokerName?, options?)   // Method, stream/topic consumer
@@ -462,6 +543,7 @@ Default `JsonBodyCodec`:
 |---|---|
 | `AmqpConnectionError` | Connection-level issues, `send()` when AMQP is disabled or no reply stream is configured on the broker |
 | `AmqpTimeoutError` | `send()` Observable when no reply arrives in time. Carries `address`, `correlationId`, `timeoutMs` |
+| `AmqpPublishError` | `emitConfirmed()` Observable when the broker didn't take the message. Carries `address`, `outcome` (`released` / `rejected` / `modified` / `unsent` / `disconnected` / `timeout`), `reason`, and the AMQP `condition` / `description` when the broker reported one |
 | `AmqpHandlerError` | Reserved for future use |
 | `AmqpError` | Abstract base — `if (err instanceof AmqpError) …` |
 

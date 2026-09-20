@@ -49,6 +49,10 @@ declare module 'rhea' {
     target?: Target | string;
     autosettle?: boolean;
     name?: string;
+    /** rhea re-dispatches a `modified` outcome as `released` when this is
+     *  true (its default). We open senders with `false` so the four delivery
+     *  outcomes map one-to-one onto the events `emitConfirmed()` listens to. */
+    treat_modified_as_released?: boolean;
   }
 
   export interface MessageProperties {
@@ -99,6 +103,10 @@ declare module 'rhea' {
   }
 
   export interface Delivery {
+    /** Session-scoped delivery id, allocated by rhea on `sender.send()` and
+     *  echoed on the disposition events (`accepted`, `released`, `rejected`,
+     *  `modified`). Used to correlate a confirmed publish with its verdict. */
+    readonly id?: number;
     accept(): void;
     release(opts?: { delivery_failed?: boolean }): void;
     reject(error: DeliveryRejectError): void;

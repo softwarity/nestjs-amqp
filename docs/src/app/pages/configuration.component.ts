@@ -50,6 +50,7 @@ import { CodeComponent } from '../code/code.component';
   maxReconnectDelayMs: 30_000,
   idleTimeoutMs: 60_000,
   defaultSendTimeoutMs: 30_000,
+  confirmTimeoutMs: 30_000,             // optional — guard delay for emitConfirmed()
   bodyCodec: undefined,                 // optional — defaults to JsonBodyCodec
 &#125;)</app-code>
 
@@ -137,6 +138,14 @@ AmqpModule.forRootAsync(&#123;
         <tr><td><code>maxReconnectDelayMs</code></td><td><code>30000</code></td><td>Ceiling for the exponential backoff.</td></tr>
         <tr><td><code>idleTimeoutMs</code></td><td><code>60000</code></td><td>Heartbeat / idle detection.</td></tr>
         <tr><td><code>defaultSendTimeoutMs</code></td><td><code>30000</code></td><td>Default reply timeout for <code>send()</code>.</td></tr>
+        <tr>
+          <td><code>confirmTimeoutMs</code></td>
+          <td><code>defaultSendTimeoutMs</code></td>
+          <td>Guard delay for <code>emitConfirmed()</code> — covers getting credit on the link, then the
+            broker's verdict. Overridable per call with <code>&#123; timeoutMs &#125;</code>. A delivery
+            verdict is a broker round-trip, not an application one: set it lower when a publisher should
+            give up quickly. See <a routerLink="/confirmed-publish">Confirmed publish</a>.</td>
+        </tr>
         <tr>
           <td><code>replyStreamAddress</code></td>
           <td><em>(unset)</em></td>

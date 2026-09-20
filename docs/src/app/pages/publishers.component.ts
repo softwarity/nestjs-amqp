@@ -20,13 +20,15 @@ import { CodeComponent } from '../code/code.component';
           <td><code>&#64;AmqpQueue(addr, brokerName?)</code></td>
           <td><code>AmqpQueue&lt;T&gt;</code></td>
           <td>Work-queue (classic / quorum)</td>
-          <td><code>emit(payload: T): boolean</code> + <code>send&lt;TRes&gt;(payload: T)</code></td>
+          <td><code>emit(payload: T): boolean</code> + <code>emitConfirmed(payload: T)</code> +
+            <code>send&lt;TRes&gt;(payload: T)</code></td>
         </tr>
         <tr>
           <td><code>&#64;AmqpTopic(addr, brokerName?)</code></td>
           <td><code>AmqpTopic&lt;T&gt;</code></td>
           <td>Topic (stream-backed broadcast)</td>
-          <td><code>emit(payload: T): boolean</code> only</td>
+          <td><code>emit(payload: T): boolean</code> + <code>emitConfirmed(payload: T)</code>
+            (no <code>send()</code>)</td>
         </tr>
       </tbody>
     </table>
@@ -105,10 +107,39 @@ export class OrdersService &#123;
 
     <div class="callout">
       <strong>Note: <code>true</code> is a local emit, not a broker-side ack.</strong> The boolean
-      reflects whether the message reached rhea's sender pipeline; the broker may still reject it
-      later (surfaces as a <code>rejected</code> event in the logs). For strong broker acknowledgement,
-      use <code>send()</code> (request/reply) instead.
+      reflects whether the message reached rhea's sender pipeline; the broker may still refuse it
+      later, or route it to no queue at all (both surface as a <code>warn</code> line in the logs).
+      When the call site needs the broker's word, use <code>emitConfirmed()</code> — right below.
     </div>
+
+    <h4>emitConfirmed() — wait for the broker's verdict</h4>
+
+    <p>
+      Same publish, but it returns an <code>Observable&lt;void&gt;</code> that completes only once the
+      broker <strong>accepted</strong> the delivery, and errors with an <code>AmqpPublishError</code>
+      otherwise — <code>released</code> (routed to no queue), <code>rejected</code>,
+      <code>modified</code>, or one of the three failures that never reach the broker
+      (<code>unsent</code>, <code>disconnected</code>, <code>timeout</code>). Nothing to declare
+      broker-side, no consumer needed.
+    </p>
+
+    <app-code lang="ts">import &#123; AmqpQueue, AmqpPublishError &#125; from '&#64;softwarity/nestjs-amqp';
+
+&#64;AmqpQueue('tasks.trigger')
+private readonly triggers!: AmqpQueue&lt;TriggerBody&gt;;
+
+fire(trigger: TriggerBody): void &#123;
+  this.triggers.emitConfirmed(trigger).subscribe(&#123;
+    next: () =&gt; this.schedule.advanceDueDate(trigger.id),   // the broker has it
+    error: (err: AmqpPublishError) =&gt; this.logger.error(\`\$&#123;err.outcome&#125;: \$&#123;err.message&#125;\`),
+  &#125;);
+&#125;</app-code>
+
+    <p>
+      The Observable is <strong>cold</strong> — nothing is published until something subscribes, and
+      each subscription publishes once. Full story, verdict table and guard delay on
+      <a routerLink="/confirmed-publish">Confirmed publish</a>.
+    </p>
 
     <h4>send() — request / reply (optional feature)</h4>
 
@@ -129,7 +160,11 @@ export class OrdersService &#123;
 
     <h3>&#64;AmqpTopic&lt;T&gt; — broadcast publisher</h3>
 
-    <p>Same generic convention — defaults to <code>unknown</code>.</p>
+    <p>
+      Same generic convention — defaults to <code>unknown</code>. <code>emitConfirmed()</code> is
+      available here too; only <code>send()</code> is excluded, because broadcast semantics don't fit a
+      single-reply correlation model.
+    </p>
 
     <app-code lang="ts">import &#123; Injectable &#125; from '&#64;nestjs/common';
 import &#123; AmqpTopic &#125; from '&#64;softwarity/nestjs-amqp';
@@ -190,7 +225,7 @@ export class DynamicPublisher &#123;
   &#125;
 &#125;</app-code>
 
-    <h3>Options reference — emit() &amp; send()</h3>
+    <h3>Options reference — emit(), emitConfirmed() &amp; send()</h3>
 
     <table>
       <thead><tr><th>Option</th><th>Used by</th><th>Meaning</th></tr></thead>
@@ -201,8 +236,15 @@ export class DynamicPublisher &#123;
           <td>Override the configured default. Errors with <code>AmqpTimeoutError</code> after this elapses.</td>
         </tr>
         <tr>
+          <td><code>timeoutMs</code></td>
+          <td><code>emitConfirmed</code></td>
+          <td>Override the broker's <code>confirmTimeoutMs</code> for this call. Covers the whole wait —
+            getting credit on the link, then the broker's verdict. Errors with
+            <code>AmqpPublishError</code> (<code>outcome: 'timeout'</code>).</td>
+        </tr>
+        <tr>
           <td><code>properties</code></td>
-          <td>both</td>
+          <td>all three</td>
           <td>AMQP-standard message properties (<code>message_id</code>, <code>subject</code>,
             <code>content_type</code>, <code>creation_time</code>, <code>user_id</code>, …).
             <code>reply_to</code> and <code>correlation_id</code> are managed internally and ignored if
@@ -210,7 +252,7 @@ export class DynamicPublisher &#123;
         </tr>
         <tr>
           <td><code>applicationProperties</code></td>
-          <td>both</td>
+          <td>all three</td>
           <td>Custom <code>Record&lt;string, unknown&gt;</code> — business metadata (tenant ID, trace ID,
             schema version, source service, …).</td>
         </tr>

@@ -1,10 +1,10 @@
 import { Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import rhea from 'rhea';
-import type { Connection, Message, Receiver, Sender } from 'rhea';
+import type { Connection, EventContext, Message, Receiver, Sender } from 'rhea';
 import { BehaviorSubject, EMPTY, Observable, ReplaySubject, Subject } from 'rxjs';
 import { filter, take } from 'rxjs/operators';
-import { AmqpConnectionError } from './amqp.errors';
+import { AmqpConnectionError, AmqpPublishError } from './amqp.errors';
 import type { ResolvedBrokerOptions } from './amqp.options';
 import type { IncomingMessage, StreamOffset } from './amqp.types';
 import { type AmqpBodyCodec, defaultBodyCodec } from './body-codec';
@@ -16,6 +16,24 @@ import type { ExpectedDestination } from './topology-manifest';
  *  (delayed redelivery in 0.3.x). `'unknown'` means we couldn't recognise
  *  the product string — falls back to AMQP-standard behaviour everywhere. */
 export type BrokerBrand = 'rabbitmq' | 'artemis' | 'qpid' | 'unknown';
+
+/** The four AMQP 1.0 delivery outcomes a publisher can be told about.
+ *  `'accepted'` is the only success: every target queue took the message
+ *  (on a quorum queue, a majority of replicas wrote it to disk). */
+type DeliveryOutcome = 'accepted' | 'released' | 'rejected' | 'modified';
+
+/** One caller blocked on `publishConfirmed()`, waiting for the broker's
+ *  verdict on a single delivery. */
+interface PendingConfirm {
+  /** User-facing address — what the error message quotes (not the
+   *  broker-specific form `toBrokerAddress` produces). */
+  readonly address: string;
+  /** The link the delivery went out on, so a `sender_error` can fail exactly
+   *  the callers that link was carrying. */
+  readonly sender: Sender;
+  /** Resolve the caller: no argument completes it, an error fails it. */
+  readonly settle: (error?: AmqpPublishError) => void;
+}
 
 /**
  * Low-level rhea wrapper for **one** broker. Owns the single AMQP 1.0
@@ -34,6 +52,16 @@ export class BrokerConnection {
   private connection?: Connection;
   private replyReceiver?: Receiver;
   private readonly senders = new Map<string, Sender>();
+
+  /** In-flight confirmed publishes, keyed by `<broker address>#<delivery id>`
+   *  — the correlation the broker's disposition frames carry back. An entry
+   *  exists only between `sender.send()` and the verdict (or the caller
+   *  unsubscribing); `emit()` never registers one. */
+  private readonly pendingConfirms = new Map<string, PendingConfirm>();
+  /** Every in-flight confirmed publish, including those still waiting for
+   *  credit on their link (no delivery id yet). Lets a `disconnected` or a
+   *  shutdown fail them all rather than leave callers hanging. */
+  private readonly inFlightConfirms = new Set<PendingConfirm>();
 
   private brandDetected: BrokerBrand = 'unknown';
   private brandProduct?: string;
@@ -149,6 +177,12 @@ export class BrokerConnection {
     conn.on('disconnected', () => {
       this.logger.warn(`disconnected — rhea will retry (limit=${this.options.reconnectLimit})`);
       this.connectedSubject.next(false);
+      // Verdicts for deliveries that were in flight will never come back:
+      // the session is gone with its delivery ids. Fail those callers now.
+      this.failAllConfirms(
+        'disconnected',
+        `the connection to broker '${this.options.name}' dropped before the broker confirmed the delivery`,
+      );
     });
     conn.on('connection_close', () => this.logger.log('connection_close'));
     conn.on('connection_error', (ctx) => {
@@ -247,9 +281,101 @@ export class BrokerConnection {
     return true;
   }
 
+  /**
+   * Publish `message` on `address` and report what the broker did with it.
+   * Same sender pool as {@link publish} — the difference is that the
+   * `Delivery` is kept and correlated with the broker's disposition frame.
+   *
+   * The returned Observable is cold (each subscription publishes once, like
+   * `send()`), emits a single `void` and completes on `accepted`, and errors
+   * with an {@link AmqpPublishError} on anything else: `released` (no queue
+   * matched), `rejected`, `modified`, a link failure, a disconnect, or a
+   * broker that is disabled / not connected. It never errors on time by
+   * itself — the guard delay belongs to the caller (`BrokerPublisher`
+   * applies the broker's `confirmTimeoutMs`).
+   *
+   * When the link has no credit yet the message is **not** handed to rhea:
+   * it would go out later, after the caller was already told the publish
+   * failed. We wait for the link's `sendable` event instead, so a failed
+   * confirm always means nothing was published.
+   */
+  publishConfirmed(address: string, message: Message): Observable<void> {
+    return new Observable<void>((subscriber) => {
+      if (!this.options.enabled) {
+        subscriber.error(
+          new AmqpPublishError(address, 'unsent', `broker '${this.options.name}' is disabled (enabled=false)`),
+        );
+        return;
+      }
+      const conn = this.connection;
+      if (!conn?.is_open()) {
+        subscriber.error(
+          new AmqpPublishError(address, 'unsent', `the connection to broker '${this.options.name}' is not open`),
+        );
+        return;
+      }
+      const brokerAddress = this.toBrokerAddress(address);
+      const sender = this.getOrCreateSender(conn, brokerAddress);
+      const pending: PendingConfirm = {
+        address,
+        sender,
+        settle: (error?: AmqpPublishError) => {
+          if (subscriber.closed) return;
+          if (error) {
+            subscriber.error(error);
+            return;
+          }
+          subscriber.next();
+          subscriber.complete();
+        },
+      };
+      this.inFlightConfirms.add(pending);
+
+      let key: string | undefined;
+      const send = (): void => {
+        const delivery = sender.send(toRheaOutgoing(message));
+        if (delivery?.id === undefined) {
+          // rhea always allocates one; without it there is nothing to
+          // correlate the verdict with, so say so rather than hang.
+          pending.settle(
+            new AmqpPublishError(
+              address,
+              'unsent',
+              'rhea returned a delivery without an id — the broker verdict cannot be correlated',
+            ),
+          );
+          return;
+        }
+        key = confirmKey(brokerAddress, delivery.id);
+        this.pendingConfirms.set(key, pending);
+      };
+
+      let onSendable: ((ctx: EventContext) => void) | undefined;
+      if (sender.sendable()) {
+        send();
+      } else {
+        // Normal right after attach: the broker's first flow frame is a
+        // round-trip away. Also covers broker-side flow control.
+        this.logger.debug(`publishConfirmed '${address}' — waiting for credit on the link`);
+        onSendable = () => {
+          onSendable = undefined;
+          send();
+        };
+        sender.once('sendable', onSendable);
+      }
+
+      return () => {
+        if (onSendable) sender.removeListener('sendable', onSendable);
+        if (key !== undefined) this.pendingConfirms.delete(key);
+        this.inFlightConfirms.delete(pending);
+      };
+    });
+  }
+
   stop(): void {
     if (!this.options.enabled) return;
     this.logger.log('shutting down');
+    this.failAllConfirms('unsent', `broker '${this.options.name}' is shutting down`);
     this.senders.forEach((sender) => {
       if (sender.is_open()) sender.close();
     });
@@ -303,17 +429,70 @@ export class BrokerConnection {
   private getOrCreateSender(conn: Connection, address: string): Sender {
     const existing = this.senders.get(address);
     if (existing?.is_open()) return existing;
-    const sender = conn.open_sender({ target: { address } });
+    // `treat_modified_as_released: false` stops rhea from re-dispatching a
+    // `modified` outcome as `released` (its default), so the four AMQP
+    // outcomes map one-to-one onto the events below.
+    const sender = conn.open_sender({ target: { address }, treat_modified_as_released: false });
     sender.on('sender_open', () => this.logger.debug(`sender_open '${address}'`));
     sender.on('sender_error', (ctx) => {
-      this.logger.warn(`sender_error '${address}': ${describeAmqpError(extractAmqpError(ctx))}`);
+      const err = extractAmqpError(ctx);
+      this.logger.warn(`sender_error '${address}': ${describeAmqpError(err)}`);
+      // A link that fails (unknown address, revoked permission, …) will never
+      // produce a verdict for what it was carrying — fail those callers now
+      // rather than make them sit out the confirm timeout.
+      this.failConfirmsOnSender(sender, `the link to '${address}' failed: ${describeAmqpError(err)}`, err);
+    });
+    // The four delivery outcomes. Only `accepted` means the broker took
+    // responsibility for the message; `released` (nothing matched the routing
+    // key) is the quiet failure that used to go unnoticed, hence the warn.
+    sender.on('accepted', (ctx) => this.settleConfirm(address, ctx, 'accepted'));
+    sender.on('released', (ctx) => {
+      this.logger.warn(`message released on '${address}' — the broker routed it to no queue`);
+      this.settleConfirm(address, ctx, 'released');
     });
     sender.on('rejected', (ctx) => {
-      const err = extractAmqpError(ctx);
-      this.logger.warn(`message rejected on '${address}': ${describeAmqpError(err)}`);
+      this.logger.warn(`message rejected on '${address}': ${describeAmqpError(extractAmqpError(ctx))}`);
+      this.settleConfirm(address, ctx, 'rejected');
+    });
+    sender.on('modified', (ctx) => {
+      this.logger.warn(`message modified on '${address}': ${describeAmqpError(extractAmqpError(ctx))}`);
+      this.settleConfirm(address, ctx, 'modified');
     });
     this.senders.set(address, sender);
     return sender;
+  }
+
+  /** Route one delivery outcome to the caller waiting on it, if any. A
+   *  delivery nobody awaits (every `emit()`) simply has no entry. */
+  private settleConfirm(brokerAddress: string, ctx: EventContext, outcome: DeliveryOutcome): void {
+    const id = ctx.delivery?.id;
+    if (id === undefined) return;
+    const pending = this.pendingConfirms.get(confirmKey(brokerAddress, id));
+    if (!pending) return;
+    if (outcome === 'accepted') {
+      pending.settle();
+      return;
+    }
+    const err = extractAmqpError(ctx);
+    const { condition, description } = amqpErrorFields(err);
+    pending.settle(new AmqpPublishError(pending.address, outcome, outcomeReason(outcome, err), condition, description));
+  }
+
+  /** Fail every confirmed publish riding on `sender` — used when the link
+   *  itself breaks. */
+  private failConfirmsOnSender(sender: Sender, reason: string, err: unknown): void {
+    const { condition, description } = amqpErrorFields(err);
+    for (const pending of [...this.inFlightConfirms]) {
+      if (pending.sender !== sender) continue;
+      pending.settle(new AmqpPublishError(pending.address, 'unsent', reason, condition, description));
+    }
+  }
+
+  /** Fail every confirmed publish still in flight — disconnect, shutdown. */
+  private failAllConfirms(outcome: 'disconnected' | 'unsent', reason: string): void {
+    for (const pending of [...this.inFlightConfirms]) {
+      pending.settle(new AmqpPublishError(pending.address, outcome, reason));
+    }
   }
 
   /**
@@ -416,4 +595,35 @@ function describeAmqpError(err: unknown): string {
     return e.description ?? e.condition ?? JSON.stringify(err);
   }
   return JSON.stringify(err);
+}
+
+/** Correlation key for one in-flight confirmed publish. Delivery ids are
+ *  allocated per session; scoping by address keeps the key unique even if a
+ *  future rhea session policy puts senders on separate sessions. */
+function confirmKey(brokerAddress: string, deliveryId: number): string {
+  return `${brokerAddress}#${deliveryId}`;
+}
+
+/** The AMQP error fields worth handing to the caller, when the broker sent one. */
+function amqpErrorFields(err: unknown): { condition?: string; description?: string } {
+  if (!err || typeof err !== 'object') return {};
+  const e = err as { condition?: unknown; description?: unknown };
+  return {
+    condition: typeof e.condition === 'string' ? e.condition : undefined,
+    description: typeof e.description === 'string' ? e.description : undefined,
+  };
+}
+
+/** Human-readable reason for a non-`accepted` delivery outcome, with the AMQP
+ *  condition appended whenever the broker reported one. */
+function outcomeReason(outcome: Exclude<DeliveryOutcome, 'accepted'>, err: unknown): string {
+  const detail = err === undefined ? undefined : describeAmqpError(err);
+  switch (outcome) {
+    case 'released':
+      return `the broker routed the message to no queue${detail ? ` (${detail})` : ''} — check the address, the routing key and the bindings`;
+    case 'rejected':
+      return `the broker refused the message: ${detail ?? 'no error condition reported'}`;
+    case 'modified':
+      return `the broker asked for the message to be modified before redelivery${detail ? `: ${detail}` : ''}`;
+  }
 }

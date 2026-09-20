@@ -23,6 +23,10 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/request-reply.component').then((m) => m.RequestReplyComponent),
   },
   {
+    path: 'confirmed-publish',
+    loadComponent: () => import('./pages/confirmed-publish.component').then((m) => m.ConfirmedPublishComponent),
+  },
+  {
     path: 'retry-and-dlq',
     loadComponent: () => import('./pages/retry-and-dlq.component').then((m) => m.RetryAndDlqComponent),
   },
