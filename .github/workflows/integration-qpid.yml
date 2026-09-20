@@ -1,0 +1,29 @@
+name: Integration tests (Qpid)
+on:
+  push:
+    branches:
+      - '*'
+jobs:
+  qpid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Start Qpid container
+        run: docker compose -f integration/docker-compose.yml up qpid -d --wait
+      - name: Run Qpid integration spec
+        env:
+          SKIP_BROKER_SETUP: '1'
+          KEEP_BROKERS: '1'
+          AMQP_QPID_URL: amqp://admin:admin@localhost:5676
+        run: npm run test:integration -- integration/specs/qpid.spec.ts
+      - name: Dump Qpid logs on failure
+        if: failure()
+        run: docker compose -f integration/docker-compose.yml logs qpid --no-color
+      - name: Teardown
+        if: always()
+        run: docker compose -f integration/docker-compose.yml down -v

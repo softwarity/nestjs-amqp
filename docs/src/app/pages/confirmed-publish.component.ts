@@ -161,7 +161,8 @@ export class TriggerPublisher &#123;
     <p>
       Delivery outcomes are <strong>core AMQP 1.0</strong> (§3.4, delivery state), not a RabbitMQ
       extension — <code>emitConfirmed()</code> carries no broker-specific handling. What a broker
-      <em>reports</em> for a destination that doesn't exist, however, follows its own routing policy:
+      <em>reports</em> for a destination that doesn't exist, however, follows its own routing policy —
+      see <a routerLink="/broker-support">Broker support</a> for the full matrix:
     </p>
 
     <table>
@@ -181,7 +182,13 @@ export class TriggerPublisher &#123;
             to have a typo caught (<code>released</code>, or a failed attach)</td>
         </tr>
         <tr>
-          <td>Qpid and other AMQP 1.0 peers</td>
+          <td>Qpid Broker-J</td>
+          <td>integration suite</td>
+          <td>nothing is auto-created either &rarr; <code>unsent</code> with
+            <code>amqp:not-found</code>, like RabbitMQ</td>
+        </tr>
+        <tr>
+          <td>Other AMQP 1.0 peers</td>
           <td>not covered by the suite</td>
           <td>standard dispositions apply; the routing policy is the broker's own</td>
         </tr>

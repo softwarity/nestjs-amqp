@@ -6,8 +6,9 @@
 [![Unit tests](https://github.com/softwarity/nestjs-amqp/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/unit-tests.yml)
 [![RabbitMQ](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-rabbitmq.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-rabbitmq.yml)
 [![Artemis](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-artemis.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-artemis.yml)
+[![Qpid](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-qpid.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-qpid.yml)
 
-**AMQP 1.0 integration for NestJS, powered by [rhea](https://github.com/amqp/rhea).** A thin, RxJS-friendly wrapper that exposes decorator-based publishers and consumers — designed for RabbitMQ 4.x (native AMQP 1.0), Apache ActiveMQ Artemis, and Apache Qpid.
+**AMQP 1.0 integration for NestJS, powered by [rhea](https://github.com/amqp/rhea).** A thin, RxJS-friendly wrapper that exposes decorator-based publishers and consumers — designed for RabbitMQ 4.x (native AMQP 1.0), Apache ActiveMQ Artemis, and Apache Qpid — all three verified on every push ([support matrix](#broker-support)).
 
 📚 **Full documentation:** [softwarity.github.io/nestjs-amqp](https://softwarity.github.io/nestjs-amqp/)
 
@@ -31,6 +32,7 @@
 - 🌐 **Multi-broker** — speak to several brokers from one service; one connection / reply stream / DLQ per broker
 - 🔄 **Request/Reply** via per-process correlation prefix on a shared reply stream (opt-in)
 - 📡 **Broadcast/PubSub** via RabbitMQ streams (`@Subscribe`)
+- ✔️ **Confirmed publish** (`emitConfirmed`) — wait for the broker's delivery verdict instead of an optimistic boolean
 - 🔁 **Built-in retry policy** (`maxDelivery`, `dlq`) on work-queue consumers (opt-in)
 - 💀 **Optional DLQ browser** — paginate, replay, drop dead-lettered messages
 - 🧬 **Pluggable wire codec** — JSON by default with `Date` round-trip + ObjectId auto-rehydration; bring your own per broker (msgpack, protobuf, …)
@@ -549,12 +551,42 @@ Default `JsonBodyCodec`:
 | `AmqpHandlerError` | Reserved for future use |
 | `AmqpError` | Abstract base — `if (err instanceof AmqpError) …` |
 
+# Broker support
+
+Every broker below runs in the integration suite on each push — the matrix says what is **verified**, not what ought to work. ✅ verified · ⚠️ works with a caveat · ❌ not usable.
+
+| | RabbitMQ 4.x | ActiveMQ Artemis | Qpid Broker-J |
+|---|---|---|---|
+| **Integration suite** | 9 / 9 scenarios | 7 / 9 | 8 / 9 |
+| `emit()` + `@Consume` | ✅ | ✅ | ✅ |
+| [`emitConfirmed()`](#confirmed-publish--emitconfirmed) | ✅ | ✅ | ✅ |
+| [`send()` request / reply](#request--reply--opt-in) | ✅ stream reply queue | ⚠️ single instance | ⚠️ single instance |
+| `@Subscribe` fan-out | ✅ stream queue, offset `next` | ⚠️ needs a multicast address | ⚠️ single subscriber only |
+| [Retry (`maxDelivery`)](#retry--dlq--opt-in) | ✅ classic · ⚠️ quorum | ✅ | ❌ no `delivery-count` |
+| [DLQ (`dlq: true`)](#retry--dlq--opt-in) | ✅ via DLX | ⚠️ needs `dead-letter-address` | ❌ no `delivery-count` |
+| Missing destination | link attach fails → `unsent` | auto-created → `accepted` | link attach fails → `unsent` |
+| Address scheme | `/queues/<name>` added automatically | bare names | bare names |
+| [Topology manifest](#broker-topology) | JSON | XML | JSON |
+
+### Reading the caveats
+
+- **`send()` on Artemis / Qpid — single instance.** The reply design assumes a *broadcast* reply stream: every instance sees every reply and keeps its own by correlation prefix. RabbitMQ stream queues do exactly that. On a plain queue, replies are competing-consumed, so a second instance can swallow a reply meant for the first — which then times out. One instance per service: fine. Several: use RabbitMQ, or keep to `emit()` / `emitConfirmed()`.
+- **`@Subscribe` fan-out.** Same root cause. On Artemis, declare a multicast address broker-side; on Qpid, a topic exchange with one queue per subscriber. Against a plain queue the wiring works, but only one subscriber gets each message.
+- **Retry & DLQ on Qpid.** The library counts attempts with the AMQP `delivery-count` header, which Qpid Broker-J does not increment on `modified(delivery_failed: true)`. `maxDelivery` therefore never trips and `dlq: true` never fires: a handler that always throws is re-invoked in a hot loop (measured at ~24 000 times in 5 seconds). Don't rely on retry or DLQ there — accept or reject explicitly with `@AmqpSettler`.
+- **Retry on RabbitMQ quorum queues.** Same header, unevenly incremented depending on the failure path. Classic queues are reliable.
+- **Missing destination.** Only a policy difference: Artemis ships with `auto-create-queues = true`, so a typo in an address silently creates a queue instead of reporting a failure. Turn it off if you want `emitConfirmed()` to catch that.
+
+Qpid and Artemis run their own configuration in `integration/` (a declared topology for Qpid, the image defaults for Artemis) — both readable as working examples.
+
+---
+
 ## Known limitations
 
 - **In-flight `send()` across reconnects** — if a reconnect happens between sending and receiving the reply, the reply is lost (we re-subscribe with `streamOffset: 'next'`). The pending call times out.
 - **`topic.send()` (scatter-gather RPC)** — not supported. Build aggregation in user code on top of `emit()` if needed.
 - **`@Subscribe` replay** — hardcoded to `streamOffset: 'next'`. PR welcome for a dedicated `@SubscribeStream` exposing the option.
 - **Delayed retry (`retryPolicy`)** — only `'immediate'` is functional in 0.2.x. `fixed` / `exponential` shapes accepted by the type system; runtime falls back to immediate with a boot warning.
+- **Per-broker gaps** — retry / DLQ need the broker to track `delivery-count` (Qpid doesn't), and `send()` / `@Subscribe` need a broadcast destination to work across several instances. See the [broker support matrix](#broker-support).
 
 ## License
 

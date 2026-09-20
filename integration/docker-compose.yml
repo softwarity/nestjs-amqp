@@ -41,3 +41,37 @@ services:
       timeout: 5s
       retries: 30
       start_period: 30s
+
+  qpid:
+    image: apache/qpid-broker-j:latest-alpine
+    container_name: nestjs-amqp-integ-qpid
+    # The Apache image publishes linux/amd64 only; pinning the platform keeps
+    # the warning (and the surprise) out of arm64 dev machines — it runs
+    # emulated there, natively on CI.
+    platform: linux/amd64
+    ports:
+      - "5676:5672"   # AMQP
+      - "8163:8080"   # HTTP management (handy for debug)
+    environment:
+      QPID_ADMIN_USER: admin
+      QPID_ADMIN_PASSWORD: admin
+    volumes:
+      # The image's entrypoint seeds its instance from work-init/, then lets
+      # work-override/ win. Dropping our config.json there replaces the
+      # default one on first boot — no need to fight the instance creation
+      # the way Artemis forces us to.
+      - ./qpid/config.json:/qpid-broker-j/work-override/config.json:ro
+      # The node store already exists in work-init/, so the broker ignores
+      # `virtualHostInitialConfiguration`: the queues have to be declared in
+      # the store itself. Qpid Broker-J creates nothing on its own.
+      - ./qpid/default.json:/qpid-broker-j/work-override/default.json:ro
+    healthcheck:
+      # Basic auth is enabled on the management port, so the probe carries
+      # credentials; a bare GET would answer 401 and read as unhealthy. The
+      # image's wget is busybox, which has no --user/--password — hence the
+      # pre-encoded header (admin:admin).
+      test: ["CMD-SHELL", "wget -q --header='Authorization: Basic YWRtaW46YWRtaW4=' -O- http://localhost:8080/api/latest/broker >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s

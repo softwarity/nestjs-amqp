@@ -1,0 +1,90 @@
+{
+  "_comment": "Integration topology for @softwarity/nestjs-amqp. Mounted into the image's work-override/ folder, which its entrypoint copies over the default instance on first boot. Based on the image default config.json, with the queues declared up front: Qpid Broker-J has no auto-creation.",
+  "name": "${broker.name}",
+  "modelVersion": "9.1",
+  "authenticationproviders": [
+    {
+      "name": "plain",
+      "type": "Plain",
+      "secureOnlyMechanisms": [],
+      "users": [
+        {
+          "name": "${QPID_ADMIN_USER}",
+          "type": "managed",
+          "password": "${QPID_ADMIN_PASSWORD}"
+        }
+      ]
+    }
+  ],
+  "brokerloggers": [
+    {
+      "name": "console",
+      "type": "Console",
+      "brokerloginclusionrules": [
+        {
+          "name": "Qpid",
+          "type": "NameAndLevel",
+          "level": "WARN",
+          "loggerName": "org.apache.qpid.*"
+        },
+        {
+          "name": "Root",
+          "type": "NameAndLevel",
+          "level": "WARN",
+          "loggerName": "ROOT"
+        }
+      ]
+    }
+  ],
+  "plugins": [
+    {
+      "type": "MANAGEMENT-HTTP",
+      "name": "httpManagement",
+      "httpBasicAuthenticationEnabled": true
+    }
+  ],
+  "ports": [
+    {
+      "name": "AMQP",
+      "port": "${qpid.amqp_port}",
+      "authenticationProvider": "plain",
+      "virtualhostaliases": [
+        {
+          "name": "defaultAlias",
+          "type": "defaultAlias"
+        },
+        {
+          "name": "hostnameAlias",
+          "type": "hostnameAlias"
+        },
+        {
+          "name": "nameAlias",
+          "type": "nameAlias"
+        }
+      ]
+    },
+    {
+      "name": "HTTP",
+      "port": "${qpid.http_port}",
+      "authenticationProvider": "plain",
+      "protocols": [
+        "HTTP"
+      ]
+    }
+  ],
+  "virtualhostnodes": [
+    {
+      "name": "default",
+      "type": "JSON",
+      "defaultVirtualHostNode": "true",
+      "preferenceStoreAttributes": {
+        "type": "JSON",
+        "attributes": {
+          "path": "/qpid-broker-j/work"
+        }
+      },
+      "storePath": "/qpid-broker-j/work",
+      "virtualHostInitialConfiguration": "{\"type\": \"Memory\", \"queues\": [{\"name\": \"integ.simple\", \"type\": \"standard\"}, {\"name\": \"integ.request-reply\", \"type\": \"standard\"}, {\"name\": \"integ.broadcast\", \"type\": \"standard\"}, {\"name\": \"integ.retry\", \"type\": \"standard\"}, {\"name\": \"integ.dlq-test\", \"type\": \"standard\"}, {\"name\": \"integ.dlq-holding\", \"type\": \"standard\"}, {\"name\": \"integ.replies\", \"type\": \"standard\"}, {\"name\": \"integ.codec\", \"type\": \"standard\"}, {\"name\": \"integ.simple-locator\", \"type\": \"standard\"}]}"
+    }
+  ]
+}

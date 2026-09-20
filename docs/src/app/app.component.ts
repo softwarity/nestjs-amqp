@@ -33,6 +33,7 @@ export class AppComponent {
     { path: '/parameter-decorators', label: 'Parameter decorators', icon: 'tune' },
     { path: '/serialization', label: 'Serialization', icon: 'data_object' },
     { path: '/dlq-browser', label: 'DLQ browser', icon: 'manage_search' },
+    { path: '/broker-support', label: 'Broker support', icon: 'checklist' },
     { path: '/broker-topology', label: 'Broker topology', icon: 'lan' },
     { path: '/errors-lifecycle', label: 'Errors & lifecycle', icon: 'event_repeat' },
   ];

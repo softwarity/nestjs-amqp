@@ -218,7 +218,7 @@ export class BrokerConnection {
         const source: Parameters<Connection['open_receiver']>[0] = {
           source: {
             address: this.toBrokerAddress(address),
-            ...(opts.streamOffset !== undefined && { filter: streamOffsetFilter(opts.streamOffset) }),
+            ...(opts.streamOffset !== undefined && this.streamOffsetFilterFor(opts.streamOffset, address)),
           },
           autoaccept: false,
           credit_window: opts.creditWindow,
@@ -397,7 +397,7 @@ export class BrokerConnection {
     // re-opens with `next` again — replies that arrived during the gap are
     // lost; the calling `send()` times out (acceptable).
     const receiver = conn.open_receiver({
-      source: { address, filter: streamOffsetFilter('next') },
+      source: { address, ...this.streamOffsetFilterFor('next', replyStream) },
       autoaccept: false,
       credit_window: 100,
     });
@@ -493,6 +493,27 @@ export class BrokerConnection {
     for (const pending of [...this.inFlightConfirms]) {
       pending.settle(new AmqpPublishError(pending.address, outcome, reason));
     }
+  }
+
+  /**
+   * The source filter set positioning a consumer on a stream queue — or
+   * nothing at all when the peer isn't RabbitMQ.
+   *
+   * `rabbitmq:stream-offset-spec` is, as its name says, a RabbitMQ extension.
+   * We used to send it to every peer on the assumption that a broker ignores
+   * filters it doesn't know. Qpid Broker-J does not: it validates the filter
+   * set and closes the **connection** with `Expected value type is 'Filter'
+   * but got 'LinkedHashMap'`, which took down `@Subscribe` and the reply
+   * stream on that broker. Artemis and Qpid have no stream queues anyway, so
+   * there is no offset to position — skipping the filter costs nothing and
+   * keeps the connection alive.
+   */
+  private streamOffsetFilterFor(offset: StreamOffset, address: string): { filter?: Record<string, unknown> } {
+    if (this.brandDetected === 'rabbitmq') return { filter: streamOffsetFilter(offset) };
+    this.logger.debug(
+      `stream offset '${String(offset)}' not applied on '${address}' — peer is ${this.brandDetected}, not RabbitMQ`,
+    );
+    return {};
   }
 
   /**

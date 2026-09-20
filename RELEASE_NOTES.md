@@ -14,12 +14,20 @@
 
 - **`released` deliveries are now logged at `warn`**, next to the `rejected` ones, for every publish including `emit()`. A one-liner that saves hours on a wrong routing key.
 
+- **Qpid Broker-J joins the integration suite**, alongside RabbitMQ 4.x and Artemis — a fifth CI job on every push. The library announced Qpid support (brand detection, topology manifest) without a single test proving it; 8 of the 9 scenarios now run against `apache/qpid-broker-j`, with its declared topology checked in under `integration/qpid/`.
+
+- **New [broker support matrix](README.md#broker-support)** in the README and on the doc site, saying what is *verified* per broker rather than what ought to work. It carries the caveats the suite surfaced: `send()` and `@Subscribe` need a broadcast destination to work across several instances (RabbitMQ streams do, a plain queue on Artemis / Qpid does not), Artemis auto-creates a missing destination where RabbitMQ and Qpid fail the link attach, and retry / DLQ need the broker to track `delivery-count`.
+
+### Fixes
+
+- **The `rabbitmq:stream-offset-spec` source filter is no longer sent to non-RabbitMQ peers.** It was applied to every broker, on the assumption that a peer ignores a filter it doesn't know. Qpid Broker-J doesn't: it validates the filter set and closes the **connection** (`Expected value type is 'Filter' but got 'LinkedHashMap'`), which took down `@Subscribe` and the whole reply stream there. The filter now follows the brand detected on the peer's Open frame. Artemis and Qpid have no stream queues, so there was no offset to position anyway — and with the filter gone, both `send()` and `@Subscribe` work on Qpid. No change on RabbitMQ.
+
 ### Internal changes
 
 - Senders are opened with rhea's `treat_modified_as_released: false`, so the four AMQP 1.0 delivery outcomes map one-to-one onto the events the library listens to (rhea re-dispatches `modified` as `released` by default).
 - A link failure (`sender_error` — unknown address, revoked permission) now fails the confirmed publishes that link was carrying, instead of leaving them to hit the guard delay. Same for `disconnected` and for shutdown.
 - `test/publish-confirmed.spec.ts` covers the four outcomes, the credit wait, link failure, disconnect, shutdown, the guard delay, the cold-Observable semantics, and `emit()` non-regression, against a simulated rhea sender.
-- Integration coverage on **both** brokers, since delivery outcomes are core AMQP 1.0 and not a RabbitMQ extension: RabbitMQ 4.x (accepted, plus an address nothing is bound to — the link attach fails, so it surfaces as `unsent` / `amqp:not-found`) and Artemis (accepted; with its default `auto-create-queues = true` an unknown address is created and the publish is accepted — a broker policy, not a library behaviour).
+- Integration coverage on **all three** brokers, since delivery outcomes are core AMQP 1.0 and not a RabbitMQ extension: RabbitMQ 4.x (accepted, plus an address nothing is bound to — the link attach fails, so it surfaces as `unsent` / `amqp:not-found`) Artemis (accepted; with its default `auto-create-queues = true` an unknown address is created and the publish is accepted — a broker policy, not a library behaviour) and Qpid Broker-J (accepted, and `unsent` / `amqp:not-found` on an unknown address like RabbitMQ).
 
 ---
 

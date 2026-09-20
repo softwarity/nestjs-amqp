@@ -47,6 +47,10 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/dlq-browser.component').then((m) => m.DlqBrowserComponent),
   },
   {
+    path: 'broker-support',
+    loadComponent: () => import('./pages/broker-support.component').then((m) => m.BrokerSupportComponent),
+  },
+  {
     path: 'broker-topology',
     loadComponent: () => import('./pages/broker-topology.component').then((m) => m.BrokerTopologyComponent),
   },
