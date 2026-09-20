@@ -19,6 +19,7 @@
 - Senders are opened with rhea's `treat_modified_as_released: false`, so the four AMQP 1.0 delivery outcomes map one-to-one onto the events the library listens to (rhea re-dispatches `modified` as `released` by default).
 - A link failure (`sender_error` — unknown address, revoked permission) now fails the confirmed publishes that link was carrying, instead of leaving them to hit the guard delay. Same for `disconnected` and for shutdown.
 - `test/publish-confirmed.spec.ts` covers the four outcomes, the credit wait, link failure, disconnect, shutdown, the guard delay, the cold-Observable semantics, and `emit()` non-regression, against a simulated rhea sender.
+- Integration coverage on **both** brokers, since delivery outcomes are core AMQP 1.0 and not a RabbitMQ extension: RabbitMQ 4.x (accepted, plus an address nothing is bound to — the link attach fails, so it surfaces as `unsent` / `amqp:not-found`) and Artemis (accepted; with its default `auto-create-queues = true` an unknown address is created and the publish is accepted — a broker policy, not a library behaviour).
 
 ---
 

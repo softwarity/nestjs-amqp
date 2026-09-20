@@ -94,4 +94,23 @@ describe('ActiveMQ Artemis — single broker scenarios', () => {
     expect(amqp.queue('integ.simple-locator').emit({ via: 'locator' })).toBe(true);
     expect(await next).toEqual({ via: 'locator' });
   });
+
+  it('8. emitConfirmed — Artemis accepts the delivery and the consumer gets the message', async () => {
+    // Delivery outcomes are core AMQP 1.0, not a RabbitMQ extension: the same
+    // disposition correlation works here with no broker-specific handling.
+    const next = firstValueFrom(received.simple);
+    await expect(firstValueFrom(amqp.queue('integ.simple').emitConfirmed({ confirmed: true }))).resolves.toBeUndefined();
+    expect(await next).toEqual({ confirmed: true });
+  });
+
+  it('9. emitConfirmed — auto-create means an unknown address is still accepted', async () => {
+    // Broker policy, not library behaviour: this image runs with
+    // `auto-create-queues = true`, so Artemis creates the address instead of
+    // releasing the message. A confirmation says "the broker took it", never
+    // "a consumer is listening". With auto-create off, the same publish comes
+    // back as 'released' (or the attach fails → 'unsent'), like RabbitMQ.
+    await expect(
+      firstValueFrom(amqp.queue('integ.auto-created-by-confirm').emitConfirmed({ n: 1 }, { timeoutMs: 10_000 })),
+    ).resolves.toBeUndefined();
+  });
 });

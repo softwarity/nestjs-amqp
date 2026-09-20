@@ -289,7 +289,9 @@ The Observable is cold, like `send()`: nothing is published until something subs
 
 Three more failures never reach the broker at all and are reported the same way, so a caller can never mistake them for a success: `'unsent'` (broker disabled, connection not open, or the link failed), `'disconnected'` (the connection dropped before the verdict) and `'timeout'`.
 
-Which one you get for a **missing destination** depends on how the address resolves. On RabbitMQ 4.x a queue that doesn't exist fails the link attach, so it surfaces right away as `'unsent'` with `condition: 'amqp:not-found'` — verified against RabbitMQ 4.x in the integration suite. `'released'` is what you get when the address does resolve but nothing downstream takes the message, typically an exchange with no matching binding.
+**Portability.** Delivery outcomes are core AMQP 1.0, not a RabbitMQ extension: `emitConfirmed()` carries no broker-specific handling, and is verified against both RabbitMQ 4.x and Artemis in the integration suite. What a broker *reports*, though, follows its own routing policy.
+
+Which one you get for a **missing destination** depends on how the address resolves. On RabbitMQ 4.x a queue that doesn't exist fails the link attach, so it surfaces right away as `'unsent'` with `condition: 'amqp:not-found'` — verified against RabbitMQ 4.x in the integration suite. `'released'` is what you get when the address does resolve but nothing downstream takes the message, typically an exchange with no matching binding. Artemis in its default configuration (`auto-create-queues = true`) **creates** the missing address instead, so the publish comes back `accepted` — verified too. Turn auto-creation off if you want a typo in an address to be caught. In every case, a confirmation means *the broker took the message*, never *a consumer is listening*.
 
 ```ts
 if (err instanceof AmqpPublishError && err.outcome === 'released') {

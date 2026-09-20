@@ -156,6 +156,38 @@ export class TriggerPublisher &#123;
       you mean is "my topology is wrong".
     </div>
 
+    <h3>Broker support</h3>
+
+    <p>
+      Delivery outcomes are <strong>core AMQP 1.0</strong> (§3.4, delivery state), not a RabbitMQ
+      extension — <code>emitConfirmed()</code> carries no broker-specific handling. What a broker
+      <em>reports</em> for a destination that doesn't exist, however, follows its own routing policy:
+    </p>
+
+    <table>
+      <thead><tr><th>Broker</th><th>Verified</th><th>Destination that doesn't exist</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>RabbitMQ 4.x</td>
+          <td>integration suite</td>
+          <td>the link attach fails &rarr; <code>unsent</code> with <code>amqp:not-found</code>,
+            immediately</td>
+        </tr>
+        <tr>
+          <td>ActiveMQ Artemis</td>
+          <td>integration suite</td>
+          <td>with the default <code>auto-create-queues = true</code> the address is
+            <strong>created</strong>, so the publish is <code>accepted</code>. Turn auto-creation off
+            to have a typo caught (<code>released</code>, or a failed attach)</td>
+        </tr>
+        <tr>
+          <td>Qpid and other AMQP 1.0 peers</td>
+          <td>not covered by the suite</td>
+          <td>standard dispositions apply; the routing policy is the broker's own</td>
+        </tr>
+      </tbody>
+    </table>
+
     <h3>Handling the error</h3>
 
     <app-code lang="ts">import &#123; AmqpPublishError &#125; from '&#64;softwarity/nestjs-amqp';
