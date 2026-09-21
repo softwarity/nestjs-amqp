@@ -10,6 +10,8 @@
 
   `emit()` is unchanged — still synchronous, still a boolean, still fire-and-forget. This adds a method, it modifies none.
 
+  **Upgrading:** nothing to change at a call site — `emit()` and `send()` behave exactly as before. The one compile-time impact is on code that *implements* `AmqpQueue<T>` / `AmqpTopic<T>` by hand, typically a test double: TypeScript now asks for `emitConfirmed` too (`TS2739`). Add the method, or build the double from a partial and cast it.
+
 - **New broker option `confirmTimeoutMs`** — guard delay for `emitConfirmed()`, overridable per call with `{ timeoutMs }`. Defaults to `defaultSendTimeoutMs` (30s), so nothing to configure to get started; set it lower when a publisher should give up quickly, since a delivery verdict is a broker round-trip rather than an application one. When the link has no credit yet (normal right after connecting, or under broker flow control), the message is held back instead of being handed to rhea — that wait is part of the same delay, and it keeps the guarantee that a failed confirm means nothing was published.
 
 - **`released` deliveries are now logged at `warn`**, next to the `rejected` ones, for every publish including `emit()`. A one-liner that saves hours on a wrong routing key.
@@ -21,6 +23,8 @@
 ### Fixes
 
 - **The `rabbitmq:stream-offset-spec` source filter is no longer sent to non-RabbitMQ peers.** It was applied to every broker, on the assumption that a peer ignores a filter it doesn't know. Qpid Broker-J doesn't: it validates the filter set and closes the **connection** (`Expected value type is 'Filter' but got 'LinkedHashMap'`), which took down `@Subscribe` and the whole reply stream there. The filter now follows the brand detected on the peer's Open frame. Artemis and Qpid have no stream queues, so there was no offset to position anyway — and with the filter gone, both `send()` and `@Subscribe` work on Qpid. No change on RabbitMQ.
+
+  One narrow consequence worth knowing: a RabbitMQ peer that doesn't advertise `product` in its Open frame — behind a proxy that rewrites it, say — is detected as `unknown` and no longer receives the filter, so `@Subscribe` attaches without a stream offset there. Open an issue if that's your setup; the gate can be widened.
 
 ### Internal changes
 
