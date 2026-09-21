@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 1.1.0
+
 ### Changes
 
 - **Confirmed publish — `emitConfirmed()`.** New method on `AmqpQueue<T>` and `AmqpTopic<T>` (decorators and `AmqpDestinations` alike): it publishes and returns an `Observable<void>` that completes only once the broker **accepted** the delivery, and errors with the new `AmqpPublishError` otherwise. Until now a message that matched no queue — the most common topology mistake — left without a trace, because `emit()` returns as soon as rhea's sender takes it. The mental model: *`emit()`, I don't want to know; `emitConfirmed()`, tell me what the broker did with it*. Not to be confused with `send()`, which waits for an application **reply**; `emitConfirmed()` waits for a delivery **verdict** and needs neither a reply stream nor a consumer.
