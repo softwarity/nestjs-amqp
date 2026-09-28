@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 1.2.0
+
 ### Changes
 
 - **OpenTelemetry, built in.** The library is now [natively instrumented](https://opentelemetry.io/docs/concepts/instrumentation/libraries/): a publish emits a span, a consumer's work becomes its child, and the W3C trace context travels in the message's `application_properties`. A trace that starts at your gateway now continues *through* the broker instead of stopping at it.

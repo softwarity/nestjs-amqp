@@ -1,6 +1,6 @@
 {
   "name": "@softwarity/nestjs-amqp",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "AMQP 1.0 integration for NestJS, powered by rhea. Decorator-based publishers and consumers, RxJS-friendly, with optional DLQ browser.",
   "keywords": [
     "nestjs",
@@ -27,7 +27,7 @@
     "url": "git+https://github.com/softwarity/nestjs-amqp.git"
   },
   "license": "Apache-2.0",
-  "author": "Fran\u00e7ois ACHACHE <francois.achache@gmail.com>",
+  "author": "François ACHACHE <francois.achache@gmail.com>",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
