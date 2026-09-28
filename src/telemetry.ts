@@ -1,12 +1,16 @@
 import {
   context,
+  metrics,
   propagation,
   ROOT_CONTEXT,
   SpanKind,
   SpanStatusCode,
   trace,
   type Context,
+  type Counter,
+  type Histogram,
   type Link,
+  type MeterProvider,
   type Span,
 } from '@opentelemetry/api';
 import type { BrokerBrand } from './broker-connection';
@@ -200,6 +204,153 @@ function describeForSpan(err: unknown): string | undefined {
   if (err === undefined || err === null) return undefined;
   if (err instanceof Error) return err.message;
   return typeof err === 'string' ? err : undefined;
+}
+
+
+// ---------------------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------------------
+
+/**
+ * Same contract as the spans above, and the same dependency: the API alone.
+ * With no `MeterProvider` registered by the host application,
+ * `metrics.getMeter()` returns a no-op meter whose instruments record nothing.
+ *
+ * Worth knowing, because it bites: an application can have working **traces**
+ * and no meter at all. `NodeSDK` points `OTEL_METRICS_EXPORTER` at `otlp` by
+ * default, which fails loudly every minute when nothing is listening, so many
+ * services pin it to `none` on purpose. This library emits either way; whether
+ * anything collects is the application's business.
+ *
+ * Bucket boundaries come from the semantic conventions' own recommendation for
+ * messaging durations, passed as advice so the application's views can still
+ * override them.
+ */
+const DURATION_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10];
+
+interface Instruments {
+  readonly operationDuration: Histogram;
+  readonly processDuration: Histogram;
+  readonly sentMessages: Counter;
+  readonly consumedMessages: Counter;
+}
+
+/**
+ * Instruments are cached against the provider that created them. The metrics
+ * API has no equivalent of the tracer's proxy: a meter obtained before the SDK
+ * registers stays a no-op for good. Comparing the provider's identity means a
+ * late registration is picked up on the next publish instead of silently
+ * producing nothing for the life of the process.
+ */
+let cachedInstruments: { provider: MeterProvider; instruments: Instruments } | undefined;
+
+function instruments(): Instruments {
+  const provider = metrics.getMeterProvider();
+  if (cachedInstruments?.provider === provider) return cachedInstruments.instruments;
+  const meter = provider.getMeter(TRACER_NAME);
+  const built: Instruments = {
+    operationDuration: meter.createHistogram('messaging.client.operation.duration', {
+      unit: 's',
+      description: 'Duration of a messaging operation initiated by this client.',
+      advice: { explicitBucketBoundaries: DURATION_BUCKETS },
+    }),
+    processDuration: meter.createHistogram('messaging.process.duration', {
+      unit: 's',
+      description: 'Duration of the message processing operation.',
+      advice: { explicitBucketBoundaries: DURATION_BUCKETS },
+    }),
+    sentMessages: meter.createCounter('messaging.client.sent.messages', {
+      unit: '{message}',
+      description: 'Number of messages producing was attempted for.',
+    }),
+    consumedMessages: meter.createCounter('messaging.client.consumed.messages', {
+      unit: '{message}',
+      description: 'Number of messages that were delivered to the application.',
+    }),
+  };
+  cachedInstruments = { provider, instruments: built };
+  return built;
+}
+
+/** Metric attributes — the conventions ask for fewer of these than spans do. */
+function metricAttributes(a: {
+  address: string;
+  brand: BrokerBrand;
+  operationName: string;
+  errorType?: string;
+}): Record<string, string> {
+  const attrs: Record<string, string> = {
+    [ATTR_SYSTEM]: messagingSystem(a.brand),
+    [ATTR_DESTINATION]: a.address,
+    [ATTR_OPERATION_NAME]: a.operationName,
+  };
+  if (a.errorType) attrs[ATTR_ERROR_TYPE] = a.errorType;
+  return attrs;
+}
+
+/** Start of a measured operation, in the clock the histograms expect. */
+export function startClock(): number {
+  return performance.now();
+}
+
+function elapsedSeconds(startedAt: number): number {
+  return (performance.now() - startedAt) / 1000;
+}
+
+/** One publish attempt: its duration, and the message counted whether the
+ *  broker took it or not — `error.type` is what separates the two. */
+export function recordPublish(a: {
+  address: string;
+  brand: BrokerBrand;
+  startedAt: number;
+  errorType?: string;
+}): void {
+  const attrs = metricAttributes({ ...a, operationName: 'send' });
+  const i = instruments();
+  i.operationDuration.record(elapsedSeconds(a.startedAt), attrs);
+  i.sentMessages.add(1, attrs);
+}
+
+/** One message handed to a handler: how long it took, and whether it failed. */
+export function recordProcess(a: {
+  address: string;
+  brand: BrokerBrand;
+  startedAt: number;
+  errorType?: string;
+}): void {
+  const attrs = metricAttributes({ ...a, operationName: 'process' });
+  const i = instruments();
+  i.processDuration.record(elapsedSeconds(a.startedAt), attrs);
+  i.consumedMessages.add(1, attrs);
+}
+
+/**
+ * A settlement worth knowing about. `messaging.operation.name` carries the AMQP
+ * outcome — the conventions reserve that attribute for system-specific
+ * operation names, which is exactly what these are.
+ *
+ * A plain successful acceptance is **never** recorded here:
+ * `messaging.client.consumed.messages` already counts it. What this instrument
+ * exists for is the signal people alert on — *work is failing quietly* — and
+ * it separates the three ways that happens:
+ *
+ *   - `reject`  — attempts exhausted, routed to the dead-letter queue;
+ *   - `accept` **with** `error.type` — attempts exhausted with no DLQ
+ *     configured, so the message was dropped. The most insidious of the three:
+ *     nothing anywhere holds the message afterwards;
+ *   - `modify`  — handed back for another delivery, i.e. a retry.
+ */
+export function recordSettlement(a: {
+  address: string;
+  brand: BrokerBrand;
+  outcome: 'accept' | 'release' | 'reject' | 'modify';
+  startedAt: number;
+  errorType?: string;
+}): void {
+  instruments().operationDuration.record(
+    elapsedSeconds(a.startedAt),
+    metricAttributes({ ...a, operationName: a.outcome }),
+  );
 }
 
 /** Run `fn` with `span` active, so nested publishes become its children. */

@@ -2,6 +2,34 @@
 
 ## NEXT RELEASE
 
+### Changes
+
+- **Messaging metrics, on the same contract as the traces.** Four instruments, the API alone, no configuration, no option, nothing to enable:
+
+  | Instrument | Type | Recorded |
+  |---|---|---|
+  | `messaging.client.sent.messages` | counter | one per publish attempt, success or not |
+  | `messaging.client.operation.duration` | histogram, seconds | the publish — for `emitConfirmed()`, **up to the broker's verdict**, so it measures confirm latency |
+  | `messaging.client.consumed.messages` | counter | one per message handed to a handler |
+  | `messaging.process.duration` | histogram, seconds | how long the handler took, Observable handlers included |
+
+  This matters most where traces cannot help. A consumer draining a queue filled by a scheduler, a retry or a DLQ replay has no HTTP request behind it and — under a `parentbased_always_off` sampler — no trace either. That half of a system was invisible; it now has throughput, latency and error rate.
+
+  Attributes are the conventional ones: `messaging.system` (from the detected broker brand), `messaging.destination.name`, `messaging.operation.name`, and `error.type` on failure — carrying the AMQP outcome, so `released`, `rejected`, `unsent` and `timeout` are directly alertable. Histogram buckets follow the conventions' recommendation, passed as *advice* so an application's views can still override them.
+
+- **A signal for work failing quietly.** `messaging.client.operation.duration` also records settlements that are not plain acceptances, with the AMQP outcome in `messaging.operation.name`: `reject` (attempts exhausted, routed to the DLQ), `accept` **carrying an `error.type`** (attempts exhausted with no DLQ configured — the message was dropped and nothing holds it now, the most insidious of the three), and `modify` (handed back for another delivery). A successful acceptance is never recorded there, so any point on that instrument is, by construction, something going wrong.
+
+- **Said plainly in the docs: the library emits, collecting is the application's business.** Metrics are absent far more often than traces — `NodeSDK` points `OTEL_METRICS_EXPORTER` at `otlp` by default, which fails loudly every minute when nothing listens, so many services pin it to `none` and forget it. A service can therefore have working traces and no meter at all. Updating to this version does not make metrics appear; registering a `MeterProvider` does.
+
+- **Queue depth, oldest-message age and consumer counts are deliberately not measured.** The broker publishes those and is the only one with the whole picture — `rabbitmq_prometheus` already does. A client-side guess would be partial and would drift. This library stays on what it alone knows: what *this* service publishes and consumes, and how that goes.
+
+### Internal changes
+
+- `test/metrics.spec.ts` (14 cases) drives a real in-memory metrics SDK: conventional names and attributes on both sides, the verdict carried as `error.type`, a confirmed publish timed to the verdict rather than the handoff, the three settlement outcomes, silence on a plain success and on a disabled broker — and a `MeterProvider` registered **after** the first publish being picked up, since the metrics API has no equivalent of the tracer's proxy and a naively cached meter would stay a no-op for the life of the process.
+- `test/telemetry.noop.spec.ts` now runs with no `MeterProvider` either, settlement path included.
+- The RabbitMQ integration scenario asserts both counters on a real round trip, with `messaging.system` derived from the peer that actually answered.
+- `@opentelemetry/sdk-metrics` joins the **devDependencies**; the library's own dependencies are unchanged — `@opentelemetry/api` and `rhea`.
+
 ---
 
 ## 1.2.1

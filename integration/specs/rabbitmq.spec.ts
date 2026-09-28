@@ -118,6 +118,22 @@ describe('RabbitMQ — single broker scenarios', () => {
       expect(got.body).toEqual({ traced: true });
       expect(String(got.applicationProperties.traceparent)).toContain(probe.traceId);
       expect(probe.spanNames()).toContain('send integ.trace');
+
+      // The same round trip, seen as metrics: both sides counted, and
+      // messaging.system derived from the peer that actually answered.
+      const points = await probe.metricPoints();
+      const sent = points.find((p) => p.metric === 'messaging.client.sent.messages');
+      const consumed = points.find((p) => p.metric === 'messaging.client.consumed.messages');
+      expect(sent?.attributes).toMatchObject({
+        'messaging.system': 'rabbitmq',
+        'messaging.destination.name': 'integ.trace',
+        'messaging.operation.name': 'send',
+      });
+      expect(consumed?.attributes).toMatchObject({
+        'messaging.system': 'rabbitmq',
+        'messaging.destination.name': 'integ.trace',
+        'messaging.operation.name': 'process',
+      });
     } finally {
       probe.disable();
     }

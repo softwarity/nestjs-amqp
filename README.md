@@ -36,7 +36,7 @@
 - 🔄 **Request/Reply** via per-process correlation prefix on a shared reply stream (opt-in)
 - 📡 **Broadcast/PubSub** via RabbitMQ streams (`@Subscribe`)
 - ✔️ **Confirmed publish** (`emitConfirmed`) — wait for the broker's delivery verdict instead of an optimistic boolean
-- 🔭 **[OpenTelemetry built in](#tracing--opentelemetry)** — traces continue across the broker, with no configuration and no dependency on the SDK. Nothing to enable: register an SDK in your app and the spans appear
+- 🔭 **[OpenTelemetry built in](#observability--opentelemetry)** — traces **and** metrics, with no configuration and no dependency on the SDK. Nothing to enable: register an SDK in your app and the spans and instruments appear
 - 🔁 **Built-in retry policy** (`maxDelivery`, `dlq`) on work-queue consumers (opt-in)
 - 💀 **Optional DLQ browser** — paginate, replay, drop dead-lettered messages
 - 🧬 **Pluggable wire codec** — JSON by default with `Date` round-trip + ObjectId auto-rehydration; bring your own per broker (msgpack, protobuf, …)
@@ -328,11 +328,11 @@ When the link has no credit yet — normal right after connecting, or under brok
 
 ---
 
-# Tracing — OpenTelemetry
+# Observability — OpenTelemetry
 
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-natively%20instrumented-f5a800?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
 
-**Your trace does not stop at the broker.** This library is *natively instrumented*: it emits its own spans and carries the W3C trace context in every message, so the work a consumer does belongs to the trace of the HTTP request that published it — across the wire, across services.
+**Your trace does not stop at the broker, and the half of your system that no HTTP request ever touches stops being invisible.** This library is *natively instrumented* — traces and metrics: it emits its own spans and carries the W3C trace context in every message, so the work a consumer does belongs to the trace of the HTTP request that published it — across the wire, across services.
 
 There is nothing to enable, nothing to configure, and no option to pass.
 
@@ -381,9 +381,40 @@ Then there is nothing to inherit: the `process` span is a **root**, and your app
 - **`send()`** opens a `CLIENT` span for the round trip and attaches the reply as a **link**, not a child. On a shared reply stream the reply belongs to the consumer's trace; claiming it as a descendant of the request would be a fiction. Both sides carry `messaging.message.conversation_id` — the correlation id.
 - **A message that already carries a trace context keeps it.** Its context is never overwritten; the publish gets a link to it instead. That is what makes a **dead letter** still correlate with the publication that produced it, and what makes a DLQ replay point back at the original trace rather than at the admin request that replayed it.
 
+## Metrics
+
+The traces above need a parent to be worth anything. A consumer draining a queue filled by a scheduler, a retry or a DLQ replay has **no HTTP request and — under a `parentbased_always_off` sampler — no trace either**. Metrics are what make that half of the system visible, and the library emits four, on the same terms as the spans: the API only, no configuration, no option.
+
+| Instrument | Type | Recorded |
+|---|---|---|
+| `messaging.client.sent.messages` | counter | one per publish attempt, success or not |
+| `messaging.client.operation.duration` | histogram, seconds | the publish — for `emitConfirmed()`, **up to the broker's verdict**, so it measures confirm latency |
+| `messaging.client.consumed.messages` | counter | one per message handed to a handler |
+| `messaging.process.duration` | histogram, seconds | how long the handler took, Observable handlers included |
+
+Attributes are the conventional ones: `messaging.system`, `messaging.destination.name`, `messaging.operation.name`, and `error.type` when it failed — carrying the AMQP outcome, so `released`, `rejected`, `unsent` and `timeout` are what you alert on. Histogram buckets come from the conventions' own recommendation, passed as *advice* so your views can override them.
+
+### The signal for work failing quietly
+
+`messaging.client.operation.duration` also records the settlements that are not plain acceptances, with the AMQP outcome in `messaging.operation.name`:
+
+| `messaging.operation.name` | What happened |
+|---|---|
+| `reject` | attempts exhausted, routed to the dead-letter queue |
+| `accept` **with** `error.type` | attempts exhausted with **no DLQ configured** — the message was dropped, and nothing holds it now. The most insidious of the three |
+| `modify` | handed back for another delivery: a retry |
+
+A successful acceptance is never recorded here — `messaging.client.consumed.messages` already counts it. So any point on this instrument is, by construction, something going wrong.
+
+### The library emits; collecting is your application's business
+
+This is worth stating plainly, because metrics are **absent far more often than traces**. `NodeSDK` points `OTEL_METRICS_EXPORTER` at `otlp` by default, which fails loudly every minute when nothing is listening — so plenty of services pin it to `none` on purpose and never think about it again.
+
+The consequence: a service can have working traces and **no meter at all**. In that case this library records into no-op instruments, costs nothing, and says nothing. Updating to this version does not make metrics appear; registering a `MeterProvider` in your application does.
+
 ## Caveat worth knowing
 
-Messaging semantic conventions are still in *development* status upstream. Attribute names may move; the spec's own advice is not to chase versions until they stabilise, which is what this library does.
+Messaging semantic conventions — metrics included — are still in *development* status upstream. Attribute names may move; the spec's own advice is not to chase versions until they stabilise, which is what this library does.
 
 📚 Full details: [doc site → Tracing](https://softwarity.github.io/nestjs-amqp/#/tracing)
 

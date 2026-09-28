@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { context, propagation, trace } from '@opentelemetry/api';
+import { context, metrics, propagation, trace } from '@opentelemetry/api';
 import type { Delivery } from 'rhea';
 import { firstValueFrom } from 'rxjs';
 import { AmqpConsumerExplorer } from '../src/amqp.consumer-explorer';
@@ -27,6 +27,7 @@ describe('No SDK registered — the instrumentation is inert', () => {
     trace.disable();
     propagation.disable();
     context.disable();
+    metrics.disable();
     for (const level of ['log', 'warn', 'error', 'debug', 'verbose'] as const) {
       jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined);
     }
@@ -123,6 +124,44 @@ describe('No SDK registered — the instrumentation is inert', () => {
 
     expect(seen).toEqual([{ id: '1' }]);
     expect(settled).toEqual(['accept']);
+  });
+
+  it('publishes and consumes with no MeterProvider registered', () => {
+    // Metrics are more often absent than traces: `NodeSDK` defaults
+    // OTEL_METRICS_EXPORTER to otlp, which fails every minute when nothing
+    // listens, so plenty of services pin it to `none`. The library must be
+    // silent and free in exactly that setup.
+    const { broker, conn } = startBroker();
+    expect(broker.publish('orders.create', { body: '{}' })).toBe(true);
+    expect(senderFor(conn).sent).toHaveLength(1);
+
+    const settled: string[] = [];
+    const explorer = new AmqpConsumerExplorer(undefined as never, undefined as never, undefined as never);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (explorer as any).dispatch(
+      { brand: 'unknown', decodeBody: (b: unknown) => JSON.parse(String(b)), publish: () => true } as never,
+      {},
+      () => {
+        throw new Error('fails, so the settlement path runs too');
+      },
+      [{ kind: 'BODY' }],
+      {
+        address: 'orders.create',
+        kind: 'consume',
+        options: { maxDelivery: 1, retryPolicy: 'immediate', dlq: true, maxWindow: 100 },
+      },
+      {
+        address: 'orders.create',
+        message: { body: '{"id":"1"}', properties: {}, application_properties: {} },
+        delivery: {
+          accept: () => settled.push('accept'),
+          reject: () => settled.push('reject'),
+          release: () => settled.push('release'),
+          modified: () => settled.push('modified'),
+        } as unknown as Delivery,
+      },
+    );
+    expect(settled).toEqual(['reject']);
   });
 
   it('survives a message that carries a traceparent from a traced system', () => {

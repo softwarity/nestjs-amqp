@@ -6,7 +6,7 @@ import { CodeComponent } from '../code/code.component';
   selector: 'app-tracing',
   imports: [CodeComponent, RouterLink],
   template: `
-    <h2>Tracing — OpenTelemetry</h2>
+    <h2>Observability — OpenTelemetry</h2>
 
     <p>
       <a href="https://opentelemetry.io/" target="_blank" rel="noopener">
@@ -18,7 +18,8 @@ import { CodeComponent } from '../code/code.component';
     </p>
 
     <p>
-      <strong>Your trace does not stop at the broker.</strong> This library is
+      <strong>Your trace does not stop at the broker, and the half of your system no HTTP request ever
+      touches stops being invisible.</strong> This library is
       <a href="https://opentelemetry.io/docs/concepts/instrumentation/libraries/" target="_blank" rel="noopener">
         natively instrumented</a>: it emits its own spans and carries the W3C trace context in every message, so the
       work a consumer does belongs to the trace of the HTTP request that published it — across the wire, across
@@ -169,8 +170,97 @@ this.orders.emit(body);</app-code>
       <code>application_properties</code>, which is core AMQP 1.0: no broker-specific handling anywhere.
     </p>
 
+    <h3>Metrics</h3>
+
+    <p>
+      The traces above need a parent to be worth anything. A consumer draining a queue filled by a scheduler, a retry
+      or a DLQ replay has <strong>no HTTP request and — under a <code>parentbased_always_off</code> sampler — no trace
+      either</strong>. Metrics are what make that half of the system visible, and the library emits four of them on
+      the same terms as the spans: the API only, no configuration, no option.
+    </p>
+
+    <table>
+      <thead><tr><th>Instrument</th><th>Type</th><th>Recorded</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>messaging.client.sent.messages</code></td>
+          <td>counter</td>
+          <td>one per publish attempt, success or not</td>
+        </tr>
+        <tr>
+          <td><code>messaging.client.operation.duration</code></td>
+          <td>histogram, seconds</td>
+          <td>the publish — for <a routerLink="/confirmed-publish"><code>emitConfirmed()</code></a>,
+            <strong>up to the broker's verdict</strong>, so it measures confirm latency</td>
+        </tr>
+        <tr>
+          <td><code>messaging.client.consumed.messages</code></td>
+          <td>counter</td>
+          <td>one per message handed to a handler</td>
+        </tr>
+        <tr>
+          <td><code>messaging.process.duration</code></td>
+          <td>histogram, seconds</td>
+          <td>how long the handler took, Observable handlers included</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>
+      Attributes are the conventional ones — <code>messaging.system</code>,
+      <code>messaging.destination.name</code>, <code>messaging.operation.name</code>, and
+      <code>error.type</code> when it failed, carrying the AMQP outcome so <code>released</code>,
+      <code>rejected</code>, <code>unsent</code> and <code>timeout</code> are what you alert on. Histogram buckets
+      come from the conventions' own recommendation, passed as <em>advice</em> so your views can override them.
+    </p>
+
+    <h4>The signal for work failing quietly</h4>
+
+    <p>
+      <code>messaging.client.operation.duration</code> also records the settlements that are not plain acceptances,
+      with the AMQP outcome in <code>messaging.operation.name</code>:
+    </p>
+
+    <table>
+      <thead><tr><th><code>messaging.operation.name</code></th><th>What happened</th></tr></thead>
+      <tbody>
+        <tr><td><code>reject</code></td><td>attempts exhausted, routed to the dead-letter queue</td></tr>
+        <tr>
+          <td><code>accept</code> <strong>with</strong> <code>error.type</code></td>
+          <td>attempts exhausted with <strong>no DLQ configured</strong> — the message was dropped, and nothing holds
+            it now. The most insidious of the three</td>
+        </tr>
+        <tr><td><code>modify</code></td><td>handed back for another delivery: a retry</td></tr>
+      </tbody>
+    </table>
+
+    <p>
+      A successful acceptance is never recorded here — <code>messaging.client.consumed.messages</code> already counts
+      it. So any point on this instrument is, by construction, something going wrong.
+    </p>
+
+    <div class="callout warn">
+      <strong>The library emits; collecting is your application's business.</strong> Worth stating plainly, because
+      metrics are absent far more often than traces: <code>NodeSDK</code> points
+      <code>OTEL_METRICS_EXPORTER</code> at <code>otlp</code> by default, which fails loudly every minute when nothing
+      is listening — so plenty of services pin it to <code>none</code> on purpose and never think about it again. A
+      service can therefore have working traces and <strong>no meter at all</strong>. This library then records into
+      no-op instruments, costs nothing and says nothing. Updating does not make metrics appear; registering a
+      <code>MeterProvider</code> in your application does.
+    </div>
+
+    <h4>What this library deliberately does not measure</h4>
+
+    <p>
+      Queue depth, the age of the oldest message, how many consumers are connected: the <strong>broker</strong>
+      publishes those, and it is the only one with the whole picture. A client-side guess would be partial and would
+      drift. This library sticks to what it alone knows — what <em>this</em> service publishes and consumes, and how
+      that goes.
+    </p>
+
     <div class="callout">
-      <strong>Caveat worth knowing.</strong> Messaging semantic conventions are still in <em>development</em> status
+      <strong>Caveat worth knowing.</strong> Messaging semantic conventions — metrics included — are still in
+      <em>development</em> status
       upstream. Attribute names may move; the spec's own advice is not to chase versions until they stabilise, which is
       what this library does.
     </div>

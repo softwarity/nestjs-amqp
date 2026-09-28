@@ -4,7 +4,7 @@ import { isObservable, Subscription } from 'rxjs';
 import type { Delivery } from 'rhea';
 import { AMQP_PARAMS_METADATA, type AmqpContext, type AmqpSettler } from './amqp.param-decorators';
 import type { AmqpParamMeta, ConsumerMetadata, IncomingMessage, RetryPolicy } from './amqp.types';
-import type { BrokerConnection } from './broker-connection';
+import type { BrokerBrand, BrokerConnection } from './broker-connection';
 import { BrokerRegistry } from './broker-registry';
 import { AMQP_CONSUMER_METADATA } from './consumers.decorator';
 import {
@@ -12,7 +12,10 @@ import {
   carriedContext,
   errorTypeOf,
   failSpan,
+  recordProcess,
+  recordSettlement,
   SpanKind,
+  startClock,
   startMessagingSpan,
   withSpan,
 } from './telemetry';
@@ -242,12 +245,15 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
       conversationId: incoming.message.properties?.correlation_id,
       parent,
     });
+    const startedAt = startClock();
+    const policyWhere = { address: meta.address, brand: broker.brand };
     let spanOpen = true;
     const closeSpan = (errorType?: string, err?: unknown): void => {
       if (!spanOpen) return;
       spanOpen = false;
       if (errorType) failSpan(span, errorType, err);
       else span.end();
+      recordProcess({ address: meta.address, brand: broker.brand, startedAt, errorType });
     };
 
     // Everything below runs with the span active, which is what makes the
@@ -262,7 +268,7 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
         result = method.apply(instance, args);
       } catch (err) {
         this.logger.warn(`handler '${meta.address}' threw: ${describe(err)}`);
-        if (!ctx.settled) applyErrorPolicy(meta.options, ctx.deliveryCount, incoming.delivery, err);
+        if (!ctx.settled) applyErrorPolicy(meta.options, ctx.deliveryCount, incoming.delivery, err, policyWhere);
         closeSpan(errorTypeOf(err), err);
         return;
       }
@@ -276,7 +282,7 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
           }),
           error: bindToSpan(span, parent, (err: unknown) => {
             this.logger.warn(`handler '${meta.address}' Observable errored: ${describe(err)}`);
-            if (!ctx.settled) applyErrorPolicy(meta.options, ctx.deliveryCount, incoming.delivery, err);
+            if (!ctx.settled) applyErrorPolicy(meta.options, ctx.deliveryCount, incoming.delivery, err, policyWhere);
             closeSpan(errorTypeOf(err), err);
           }),
         });
@@ -341,7 +347,8 @@ function makeSettler(ctx: AmqpContext): AmqpSettler {
   };
 }
 
-function buildContext(address: string, incoming: IncomingMessage, _broker: BrokerConnection): AmqpContext {
+function buildContext(address: string, incoming: IncomingMessage, broker: BrokerConnection): AmqpContext {
+  const where = { address, brand: broker.brand };
   let settled = false;
   // AMQP `delivery_count` is the number of UNSUCCESSFUL prior deliveries (0
   // on first attempt). We expose a 1-based attempt number for ergonomics.
@@ -360,12 +367,18 @@ function buildContext(address: string, incoming: IncomingMessage, _broker: Broke
       incoming.delivery.accept();
     },
     release(): void {
+      const startedAt = startClock();
       settled = true;
       incoming.delivery.release();
+      recordSettlement({ ...where, outcome: 'release', startedAt });
     },
     reject(error): void {
+      const startedAt = startClock();
       settled = true;
       incoming.delivery.reject(error ?? { condition: 'amqp:internal-error' });
+      // A hand-written reject is a dead-letter too — counted like the one the
+      // automatic policy performs, so an alert sees both.
+      recordSettlement({ ...where, outcome: 'reject', startedAt, errorType: error?.condition });
     },
   };
 }
@@ -387,16 +400,25 @@ function applyErrorPolicy(
   deliveryCount: number,
   delivery: Delivery,
   err: unknown,
+  where: { address: string; brand: BrokerBrand },
 ): void {
+  const startedAt = startClock();
+  const errorType = errorTypeOf(err);
   if (deliveryCount >= opts.maxDelivery) {
     if (opts.dlq) {
       delivery.reject({ condition: 'amqp:internal-error', description: describe(err) });
+      recordSettlement({ ...where, outcome: 'reject', startedAt, errorType });
     } else {
+      // Attempts exhausted and no DLQ: the message is dropped. Recorded as an
+      // acceptance carrying an `error.type`, which is what tells it apart from
+      // the ordinary acceptances this instrument stays silent about.
       delivery.accept();
+      recordSettlement({ ...where, outcome: 'accept', startedAt, errorType });
     }
     return;
   }
   delivery.modified({ delivery_failed: true, undeliverable_here: false });
+  recordSettlement({ ...where, outcome: 'modify', startedAt, errorType });
 }
 
 function describe(err: unknown): string {

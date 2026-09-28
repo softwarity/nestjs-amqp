@@ -9,7 +9,9 @@ import {
   failSpan,
   injectTraceContext,
   linkToCarriedContext,
+  recordPublish,
   SpanKind,
+  startClock,
   startMessagingSpan,
   withSpan,
 } from './telemetry';
@@ -311,11 +313,15 @@ export class BrokerConnection {
    */
   publish(address: string, message: Message): boolean {
     if (!this.options.enabled) return false;
+    const startedAt = startClock();
     const conn = this.connection;
     const { message: outgoing, span } = this.prepareOutgoing(address, message);
+    const measure = (errorType?: string): void =>
+      recordPublish({ address, brand: this.brandDetected, startedAt, errorType });
     if (!conn?.is_open()) {
       this.logger.warn(`publish to '${address}' dropped — connection not open`);
       failSpan(span, 'unsent');
+      measure('unsent');
       return false;
     }
     const brokerAddress = this.toBrokerAddress(address);
@@ -325,11 +331,13 @@ export class BrokerConnection {
       // loop doesn't drown the reason that matters.
       this.logger.debug(`publish to '${address}' dropped — ${refused}`);
       failSpan(span, 'unsent');
+      measure('unsent');
       return false;
     }
     const sender = this.getOrCreateSender(conn, brokerAddress);
     sender.send(toRheaOutgoing(outgoing));
     span.end();
+    measure();
     return true;
   }
 
@@ -394,6 +402,7 @@ export class BrokerConnection {
       // One span per subscription — each subscription publishes once. It stays
       // open until the broker's verdict, so its duration is the confirm
       // latency, not the handoff to rhea.
+      const startedAt = startClock();
       const { message: outgoing, span } = this.prepareOutgoing(address, message);
       let spanOpen = true;
       const closeSpan = (errorType?: string, err?: unknown): void => {
@@ -401,6 +410,10 @@ export class BrokerConnection {
         spanOpen = false;
         if (errorType) failSpan(span, errorType, err);
         else span.end();
+        // Measured at the same instant as the span: for a confirmed publish
+        // that is the broker's verdict, so the histogram is confirm latency
+        // and `error.type` is the outcome people alert on.
+        recordPublish({ address, brand: this.brandDetected, startedAt, errorType });
       };
 
       const conn = this.connection;

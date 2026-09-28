@@ -166,12 +166,13 @@ export class OrdersListener &#123;
     </p>
 
     <div class="callout">
-      <strong>Traces cross the broker with nothing to set up.</strong> The library is
+      <strong>Traces cross the broker, and what no HTTP request touches is still measured.</strong> The library is
       <a href="https://opentelemetry.io/docs/concepts/instrumentation/libraries/" target="_blank" rel="noopener">natively
       instrumented</a> for OpenTelemetry: register an SDK in your application and a publish becomes a span, the
       consumer's work becomes its child, and the W3C context travels in the message. No option, no environment
-      variable — and nothing at all on the wire when you run without an SDK. See
-      <a routerLink="/tracing">Tracing</a>.
+      variable — and nothing at all on the wire when you run without an SDK. Messaging metrics come from the same
+      contract, which matters for consumers no request ever reaches. See
+      <a routerLink="/tracing">Observability</a>.
     </div>
 
     <h3>What's NOT in the 90% case</h3>

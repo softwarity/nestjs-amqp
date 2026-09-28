@@ -1,4 +1,4 @@
-import { context, propagation, trace } from '@opentelemetry/api';
+import { context, metrics, propagation, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import {
@@ -7,6 +7,12 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
+import {
+  AggregationTemporality,
+  InMemoryMetricExporter,
+  MeterProvider,
+  PeriodicExportingMetricReader,
+} from '@opentelemetry/sdk-metrics';
 
 /**
  * A throwaway in-memory OpenTelemetry SDK, for the integration scenario that
@@ -22,6 +28,8 @@ export interface TracingProbe {
   run<T>(fn: () => T): T;
   /** Names of the spans the library emitted, in completion order. */
   spanNames(): string[];
+  /** Every metric point recorded so far, flattened to name + attributes. */
+  metricPoints(): Promise<{ metric: string; attributes: Record<string, unknown> }[]>;
   /** Unregister the SDK — always call it, in a `finally`. */
   disable(): void;
 }
@@ -34,6 +42,11 @@ export function enableTracing(): TracingProbe {
     new BasicTracerProvider({ sampler: new AlwaysOnSampler(), spanProcessors: [new SimpleSpanProcessor(exporter)] }),
   );
 
+  const metricExporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+  const reader = new PeriodicExportingMetricReader({ exporter: metricExporter, exportIntervalMillis: 60_000 });
+  const meterProvider = new MeterProvider({ readers: [reader] });
+  metrics.setGlobalMeterProvider(meterProvider);
+
   const parent = trace.getTracer('integration').startSpan('caller');
   return {
     traceId: parent.spanContext().traceId,
@@ -43,11 +56,26 @@ export function enableTracing(): TracingProbe {
     spanNames(): string[] {
       return exporter.getFinishedSpans().map((s) => s.name);
     },
+    async metricPoints(): Promise<{ metric: string; attributes: Record<string, unknown> }[]> {
+      await reader.forceFlush();
+      return metricExporter
+        .getMetrics()
+        .flatMap((r) => r.scopeMetrics)
+        .flatMap((sm) => sm.metrics)
+        .flatMap((m) =>
+          m.dataPoints.map((dp) => ({
+            metric: m.descriptor.name,
+            attributes: dp.attributes as Record<string, unknown>,
+          })),
+        );
+    },
     disable(): void {
       parent.end();
       trace.disable();
       propagation.disable();
       context.disable();
+      metrics.disable();
+      void meterProvider.shutdown();
     },
   };
 }
