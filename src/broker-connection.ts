@@ -5,11 +5,20 @@ import type { Connection, EventContext, Message, Receiver, Sender } from 'rhea';
 import { BehaviorSubject, EMPTY, Observable, ReplaySubject, Subject } from 'rxjs';
 import { filter, take } from 'rxjs/operators';
 import { AmqpConnectionError, AmqpPublishError } from './amqp.errors';
+import {
+  failSpan,
+  injectTraceContext,
+  linkToCarriedContext,
+  SpanKind,
+  startMessagingSpan,
+  withSpan,
+} from './telemetry';
 import type { ResolvedBrokerOptions } from './amqp.options';
 import type { IncomingMessage, StreamOffset } from './amqp.types';
 import { type AmqpBodyCodec, defaultBodyCodec } from './body-codec';
 import { normalizeIncoming, toRheaOutgoing } from './rhea-adapter';
 import type { ExpectedDestination } from './topology-manifest';
+import type { Span } from '@opentelemetry/api';
 
 /** Brand reported by the peer in its AMQP Open frame `properties.product`
  *  field. Used for diagnostics and to gate broker-specific features
@@ -272,13 +281,48 @@ export class BrokerConnection {
   publish(address: string, message: Message): boolean {
     if (!this.options.enabled) return false;
     const conn = this.connection;
+    const { message: outgoing, span } = this.prepareOutgoing(address, message);
     if (!conn?.is_open()) {
       this.logger.warn(`publish to '${address}' dropped — connection not open`);
+      failSpan(span, 'unsent');
       return false;
     }
     const sender = this.getOrCreateSender(conn, this.toBrokerAddress(address));
-    sender.send(toRheaOutgoing(message));
+    sender.send(toRheaOutgoing(outgoing));
+    span.end();
     return true;
+  }
+
+  /**
+   * Clone the outgoing message's `application_properties`, put the current
+   * trace context in them, and open the PRODUCER span for this publish.
+   *
+   * The clone matters: injecting into the object the application handed us
+   * would leak a `traceparent` into the next publish that reuses it. And a
+   * message that **already** carries a context — a DLQ replay, above all —
+   * keeps it and gets a span link instead, so a dead letter stays correlated
+   * with the publication that produced it.
+   */
+  private prepareOutgoing(address: string, message: Message): { message: Message; span: Span } {
+    const carrier: Record<string, unknown> = { ...(message.application_properties ?? {}) };
+    const carried = linkToCarriedContext(carrier);
+    const span = startMessagingSpan({
+      address,
+      brand: this.brandDetected,
+      operationName: 'send',
+      operationType: 'send',
+      kind: SpanKind.PRODUCER,
+      messageId: message.properties?.message_id,
+      conversationId: message.properties?.correlation_id,
+      links: carried ? [carried] : undefined,
+    });
+    // Injected with the span active, so a consumer's `process` span becomes a
+    // child of this publish rather than of whatever triggered it.
+    if (!carried) withSpan(span, undefined, () => injectTraceContext(carrier));
+    // No SDK registered → nothing was written → leave the message untouched
+    // rather than add an empty map section to the wire.
+    if (Object.keys(carrier).length === 0) return { message, span };
+    return { message: { ...message, application_properties: carrier }, span };
   }
 
   /**
@@ -307,8 +351,21 @@ export class BrokerConnection {
         );
         return;
       }
+      // One span per subscription — each subscription publishes once. It stays
+      // open until the broker's verdict, so its duration is the confirm
+      // latency, not the handoff to rhea.
+      const { message: outgoing, span } = this.prepareOutgoing(address, message);
+      let spanOpen = true;
+      const closeSpan = (errorType?: string, err?: unknown): void => {
+        if (!spanOpen) return;
+        spanOpen = false;
+        if (errorType) failSpan(span, errorType, err);
+        else span.end();
+      };
+
       const conn = this.connection;
       if (!conn?.is_open()) {
+        closeSpan('unsent');
         subscriber.error(
           new AmqpPublishError(address, 'unsent', `the connection to broker '${this.options.name}' is not open`),
         );
@@ -320,6 +377,7 @@ export class BrokerConnection {
         address,
         sender,
         settle: (error?: AmqpPublishError) => {
+          closeSpan(error?.outcome, error);
           if (subscriber.closed) return;
           if (error) {
             subscriber.error(error);
@@ -333,7 +391,7 @@ export class BrokerConnection {
 
       let key: string | undefined;
       const send = (): void => {
-        const delivery = sender.send(toRheaOutgoing(message));
+        const delivery = sender.send(toRheaOutgoing(outgoing));
         if (delivery?.id === undefined) {
           // rhea always allocates one; without it there is nothing to
           // correlate the verdict with, so say so rather than hang.
@@ -365,6 +423,10 @@ export class BrokerConnection {
       }
 
       return () => {
+        // Left without a verdict: inside the library that is the confirm
+        // timeout (the only thing that unsubscribes); user code cancelling a
+        // pending publish lands here too, which reads the same on a trace.
+        closeSpan('timeout');
         if (onSendable) sender.removeListener('sendable', onSendable);
         if (key !== undefined) this.pendingConfirms.delete(key);
         this.inFlightConfirms.delete(pending);

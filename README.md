@@ -7,6 +7,7 @@
 [![RabbitMQ](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-rabbitmq.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-rabbitmq.yml)
 [![Artemis](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-artemis.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-artemis.yml)
 [![Qpid](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-qpid.yml/badge.svg)](https://github.com/softwarity/nestjs-amqp/actions/workflows/integration-qpid.yml)
+[![OpenTelemetry: natively instrumented](https://img.shields.io/badge/OpenTelemetry-natively%20instrumented-f5a800?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/docs/concepts/instrumentation/libraries/)
 
 **AMQP 1.0 integration for NestJS, powered by [rhea](https://github.com/amqp/rhea).** A thin, RxJS-friendly wrapper that exposes decorator-based publishers and consumers — designed for RabbitMQ 4.x (native AMQP 1.0), Apache ActiveMQ Artemis, and Apache Qpid — all three verified on every push ([support matrix](#broker-support)).
 
@@ -33,6 +34,7 @@
 - 🔄 **Request/Reply** via per-process correlation prefix on a shared reply stream (opt-in)
 - 📡 **Broadcast/PubSub** via RabbitMQ streams (`@Subscribe`)
 - ✔️ **Confirmed publish** (`emitConfirmed`) — wait for the broker's delivery verdict instead of an optimistic boolean
+- 🔭 **[OpenTelemetry built in](#tracing--opentelemetry)** — traces continue across the broker, with no configuration and no dependency on the SDK. Nothing to enable: register an SDK in your app and the spans appear
 - 🔁 **Built-in retry policy** (`maxDelivery`, `dlq`) on work-queue consumers (opt-in)
 - 💀 **Optional DLQ browser** — paginate, replay, drop dead-lettered messages
 - 🧬 **Pluggable wire codec** — JSON by default with `Date` round-trip + ObjectId auto-rehydration; bring your own per broker (msgpack, protobuf, …)
@@ -321,6 +323,67 @@ A delivery verdict is a broker round-trip, not an application round-trip: set it
 When the link has no credit yet — normal right after connecting, or under broker flow control — the message is held back rather than handed to rhea, so a failed confirm always means nothing was published. That wait is part of the same guard delay.
 
 📚 Full details: [doc site → Confirmed publish](https://softwarity.github.io/nestjs-amqp/#/confirmed-publish)
+
+---
+
+# Tracing — OpenTelemetry
+
+[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-natively%20instrumented-f5a800?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
+
+**Your trace does not stop at the broker.** This library is *natively instrumented*: it emits its own spans and carries the W3C trace context in every message, so the work a consumer does belongs to the trace of the HTTP request that published it — across the wire, across services.
+
+There is nothing to enable, nothing to configure, and no option to pass.
+
+```ts
+// Nothing here mentions telemetry. That's the point.
+this.orders.emit(body);
+```
+
+```
+GET /orders/42                                  ← your gateway
+└─ send orders.create               PRODUCER    ← this library, publisher side
+   └─ process orders.create         CONSUMER    ← this library, consumer side
+      └─ pg.query                               ← your other instrumentation
+```
+
+## How it can be both built in and optional
+
+The package depends on [`@opentelemetry/api`](https://www.npmjs.com/package/@opentelemetry/api) — and on nothing else, not the SDK, not an exporter. That package has **zero dependencies** and is inert on its own: with no SDK registered by your application, `trace.getTracer()` hands back a no-op tracer and the context injection writes **nothing**. The instrumentation code is therefore unconditional, with no flag and no `if` — and costs nothing when you don't do observability. A unit spec holds that claim to the wire: with no SDK, a published message gets **no** `application_properties` added.
+
+The endpoint, the exporter, the sampler and the service name belong to your application's own telemetry bootstrap. This library never reads an environment variable and never forces a sampling decision.
+
+## What it emits
+
+Two spans per hop — the propagation alone would not do, because a span crossing a broker must show the hop, not hide it:
+
+| Span | Kind | When it ends |
+|---|---|---|
+| `send <address>` | `PRODUCER` | `emit()`: the message is handed to the sender. `emitConfirmed()`: **the broker's verdict arrives** — so the span's duration is the confirm latency |
+| `send <address>` | `CLIENT` | `send()`: the whole request/reply round trip, with the publish nested inside it |
+| `process <address>` | `CONSUMER` | your handler returns, or its Observable completes or errors |
+
+Attributes follow the messaging semantic conventions: `messaging.system` (from the detected broker brand), `messaging.destination.name`, `messaging.operation.name`, `messaging.operation.type`, `messaging.message.id`, `messaging.message.conversation_id`, and `error.type` on failure — carrying the AMQP outcome (`released`, `rejected`, `unsent`, `timeout`) for a confirmed publish that failed.
+
+## Parent-child, and what that implies
+
+A consumer's `process` span is a **child** of the publish, not a linked root. The semantic conventions make links their default and allow parent-child for message-by-message processing — which is this library's only mode.
+
+The consequence is the point: a consumer that instruments nothing of its own still appears inside the trace that caused it, and **inherits that trace's sampling decision**. If a single gateway starts your traces with `parentbased_always_off` everywhere else, that invariant survives untouched. The cost is honest: a message that sits in a queue for a long time produces a long trace with a gap in it.
+
+### A message from a system that sets no traceparent
+
+Then there is nothing to inherit: the `process` span is a **root**, and your application's sampler decides. It has what it needs to decide well — a sampler receives the span name (`process orders.create`), the kind (`CONSUMER`) and the attributes, so a service that is an entry point for foreign messages can sample exactly those roots, per destination, without this library exposing a single option.
+
+## Request / reply, and dead letters
+
+- **`send()`** opens a `CLIENT` span for the round trip and attaches the reply as a **link**, not a child. On a shared reply stream the reply belongs to the consumer's trace; claiming it as a descendant of the request would be a fiction. Both sides carry `messaging.message.conversation_id` — the correlation id.
+- **A message that already carries a trace context keeps it.** Its context is never overwritten; the publish gets a link to it instead. That is what makes a **dead letter** still correlate with the publication that produced it, and what makes a DLQ replay point back at the original trace rather than at the admin request that replayed it.
+
+## Caveat worth knowing
+
+Messaging semantic conventions are still in *development* status upstream. Attribute names may move; the spec's own advice is not to chase versions until they stabilise, which is what this library does.
+
+📚 Full details: [doc site → Tracing](https://softwarity.github.io/nestjs-amqp/#/tracing)
 
 ---
 

@@ -4,6 +4,7 @@ import { AmqpDestinations, AmqpModule, AmqpPublishError } from '../../src';
 import { TestHandlersModule } from '../fixtures/test-handlers';
 import { received, resetTestState } from '../fixtures/test-state';
 import { waitForAllBrokersReady } from '../fixtures/wait-ready';
+import { enableTracing } from '../fixtures/otel-probe';
 import { collectNext } from '../fixtures/collect';
 
 const RABBIT_URL = process.env.AMQP_RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5674';
@@ -103,8 +104,30 @@ describe('RabbitMQ — single broker scenarios', () => {
     expect(await next).toEqual({ confirmed: true });
   });
 
-  // Kept last: the failing attach leaves a dead link behind on the connection.
-  it('9. emitConfirmed — an address nothing is bound to surfaces an error', async () => {
+  it('9. trace context crosses the broker — publisher span to consumer span', async () => {
+    // The library is natively instrumented: with an SDK registered, the W3C
+    // context rides in application_properties, so the consumer's work belongs
+    // to the trace that published it. Without an SDK, nothing is added at all
+    // (covered by the unit specs).
+    const probe = enableTracing();
+    try {
+      const next = firstValueFrom(received.trace);
+      probe.run(() => amqp.queue('integ.trace').emit({ traced: true }));
+      const got = await next;
+
+      expect(got.body).toEqual({ traced: true });
+      expect(String(got.applicationProperties.traceparent)).toContain(probe.traceId);
+      expect(probe.spanNames()).toContain('send integ.trace');
+    } finally {
+      probe.disable();
+    }
+  });
+
+  // Kept last, and it must stay last: RabbitMQ answers a bad attach by
+  // failing the whole session, which takes the consumer receivers on it down
+  // with the sender. Anything after this test would see no deliveries.
+  // (That collateral damage is a library robustness issue, tracked separately.)
+  it('10. emitConfirmed — an address nothing is bound to surfaces an error', async () => {
     const err: unknown = await firstValueFrom(
       amqp.queue('integ.nowhere-at-all').emitConfirmed({ lost: true }, { timeoutMs: 10_000 }),
     ).catch((e: unknown) => e);

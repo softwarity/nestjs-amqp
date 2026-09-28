@@ -59,6 +59,11 @@
       "name": "integ.simple-locator",
       "type": "standard",
       "durable": true
+    },
+    {
+      "name": "integ.trace",
+      "type": "standard",
+      "durable": true
     }
   ]
 }

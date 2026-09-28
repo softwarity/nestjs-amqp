@@ -165,6 +165,15 @@ export class OrdersListener &#123;
       done.
     </p>
 
+    <div class="callout">
+      <strong>Traces cross the broker with nothing to set up.</strong> The library is
+      <a href="https://opentelemetry.io/docs/concepts/instrumentation/libraries/" target="_blank" rel="noopener">natively
+      instrumented</a> for OpenTelemetry: register an SDK in your application and a publish becomes a span, the
+      consumer's work becomes its child, and the W3C context travels in the message. No option, no environment
+      variable — and nothing at all on the wire when you run without an SDK. See
+      <a routerLink="/tracing">Tracing</a>.
+    </div>
+
     <h3>What's NOT in the 90% case</h3>
     <p>The bootstrap above intentionally skips a few optional features. Add them à la carte as needed:</p>
     <table>

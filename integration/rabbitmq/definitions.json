@@ -1,9 +1,17 @@
 {
   "rabbit_version": "4.0.0",
   "users": [
-    { "name": "guest", "password": "guest", "tags": "administrator" }
+    {
+      "name": "guest",
+      "password": "guest",
+      "tags": "administrator"
+    }
   ],
-  "vhosts": [{ "name": "/" }],
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
   "permissions": [
     {
       "user": "guest",
@@ -13,7 +21,6 @@
       "read": ".*"
     }
   ],
-
   "exchanges": [
     {
       "name": "integ.dlx",
@@ -25,28 +32,34 @@
       "arguments": {}
     }
   ],
-
   "queues": [
     {
       "name": "integ.simple",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
-      "arguments": { "x-queue-type": "quorum" }
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
     },
     {
       "name": "integ.request-reply",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
-      "arguments": { "x-queue-type": "quorum" }
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
     },
     {
       "name": "integ.broadcast",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
-      "arguments": { "x-queue-type": "stream", "x-max-age": "10m" }
+      "arguments": {
+        "x-queue-type": "stream",
+        "x-max-age": "10m"
+      }
     },
     {
       "name": "integ.retry",
@@ -77,31 +90,48 @@
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
-      "arguments": { "x-queue-type": "quorum" }
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
     },
     {
       "name": "integ.replies",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
-      "arguments": { "x-queue-type": "stream", "x-max-age": "5m" }
+      "arguments": {
+        "x-queue-type": "stream",
+        "x-max-age": "5m"
+      }
     },
     {
       "name": "integ.codec",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
-      "arguments": { "x-queue-type": "quorum" }
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
     },
     {
       "name": "integ.simple-locator",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
-      "arguments": { "x-queue-type": "quorum" }
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "integ.trace",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
     }
   ],
-
   "bindings": [
     {
       "source": "integ.dlx",

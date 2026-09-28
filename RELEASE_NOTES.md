@@ -2,6 +2,41 @@
 
 ## NEXT RELEASE
 
+### Changes
+
+- **OpenTelemetry, built in.** The library is now [natively instrumented](https://opentelemetry.io/docs/concepts/instrumentation/libraries/): a publish emits a span, a consumer's work becomes its child, and the W3C trace context travels in the message's `application_properties`. A trace that starts at your gateway now continues *through* the broker instead of stopping at it.
+
+  It had to live here. There is no `@opentelemetry/instrumentation-rhea` on npm, and `instrumentation-amqplib` covers AMQP 0.9.1 — a different protocol. Nothing outside this package can ever trace it.
+
+  **Nothing to enable, nothing to configure, no option added.** The only new dependency is `@opentelemetry/api` (zero dependencies of its own, never the SDK, never an exporter), and that package is inert on its own: with no SDK registered by your application, the tracer is a no-op and the context injection writes nothing. With no SDK, a published message gets **no** `application_properties` added — not an empty map, absent — which a unit spec holds to the wire. The endpoint, the exporter, the sampler and the service name stay in your application's telemetry bootstrap.
+
+- **Two spans per hop**, because propagation alone would hide the hop instead of showing it:
+
+  | Span | Kind | Ends |
+  |---|---|---|
+  | `send <address>` | `PRODUCER` | `emit()`: at handoff. `emitConfirmed()`: **when the broker's verdict arrives**, so the duration is the confirm latency and a failure carries its outcome in `error.type` |
+  | `send <address>` | `CLIENT` | `send()`: the whole request/reply round trip, publish nested inside |
+  | `process <address>` | `CONSUMER` | the handler returns, or its Observable completes or errors |
+
+  Attributes follow the messaging semantic conventions, with `messaging.system` derived from the broker brand already detected on the AMQP Open frame.
+
+- **A consumer's span is a child of the publish**, not a linked root. The conventions make links their default and allow parent-child for message-by-message processing — this library's only mode. The consequence is the point: a consumer that instruments nothing of its own still appears in the trace that caused it, and inherits that trace's **sampling decision**, so an `parentbased_always_off` invariant where one gateway starts every trace survives untouched. A message carrying no context yields a root span, and your application's sampler decides — it sees the span name, the kind and `messaging.destination.name`, which is why no option is needed for "this consumer is an entry point".
+
+- **Request/reply links rather than adopts.** `send()` attaches the reply as a span link: on a shared reply stream the reply belongs to the consumer's trace, and claiming it as a descendant of the request would be a fiction. Both sides carry `messaging.message.conversation_id`.
+
+- **A trace context a message already carries is never overwritten** — the publish links to it instead. That is what keeps a dead letter correlated with the publication that produced it, and what makes a DLQ replay point back at the original trace rather than at the admin request that replayed it.
+
+- Documented on its own [doc site page](https://softwarity.github.io/nestjs-amqp/#/tracing), in the README, and surfaced on the getting-started page — with a badge, since "does my messaging library keep my traces?" is a question worth answering before installing.
+
+  One caveat stated plainly: messaging semantic conventions are still in *development* status upstream. Attribute names may move, and the spec's own advice is not to chase versions until they stabilise.
+
+### Internal changes
+
+- `test/telemetry.spec.ts` (19 cases) drives a real in-memory SDK: producer parentage and propagation, the no-clobber rule and its link, the verdict-bearing `emitConfirmed` span, consumer parentage and root fallback, span lifetime across all four handler exits, the auto-reply nesting, and the request/reply link. `test/telemetry.noop.spec.ts` covers the no-SDK path — nothing on the wire, every behaviour unchanged.
+- Integration: a `trace context crosses the broker` scenario publishes inside a recorded span and asserts the consumer receives the context, on **RabbitMQ 4.x, Artemis and Qpid Broker-J**.
+- `@opentelemetry/sdk-trace-base`, `@opentelemetry/core` and `@opentelemetry/context-async-hooks` are **devDependencies** only — the tests need an SDK; the library must never depend on one.
+- The rhea stand-ins used by the specs moved to `test/fake-rhea.ts` instead of being copied per spec.
+
 ---
 
 ## 1.1.0

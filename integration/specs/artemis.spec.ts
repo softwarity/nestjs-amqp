@@ -4,6 +4,7 @@ import { AmqpDestinations, AmqpModule } from '../../src';
 import { TestHandlersModule } from '../fixtures/test-handlers';
 import { received, resetTestState } from '../fixtures/test-state';
 import { waitForAllBrokersReady } from '../fixtures/wait-ready';
+import { enableTracing } from '../fixtures/otel-probe';
 import { collectNext } from '../fixtures/collect';
 
 const ARTEMIS_URL = process.env.AMQP_ARTEMIS_URL ?? 'amqp://artemis:artemis@localhost:5675';
@@ -112,5 +113,24 @@ describe('ActiveMQ Artemis — single broker scenarios', () => {
     await expect(
       firstValueFrom(amqp.queue('integ.auto-created-by-confirm').emitConfirmed({ n: 1 }, { timeoutMs: 10_000 })),
     ).resolves.toBeUndefined();
+  });
+
+  it('10. trace context crosses the broker — publisher span to consumer span', async () => {
+    // The library is natively instrumented: with an SDK registered, the W3C
+    // context rides in application_properties, so the consumer's work belongs
+    // to the trace that published it. Without an SDK, nothing is added at all
+    // (covered by the unit specs).
+    const probe = enableTracing();
+    try {
+      const next = firstValueFrom(received.trace);
+      probe.run(() => amqp.queue('integ.trace').emit({ traced: true }));
+      const got = await next;
+
+      expect(got.body).toEqual({ traced: true });
+      expect(String(got.applicationProperties.traceparent)).toContain(probe.traceId);
+      expect(probe.spanNames()).toContain('send integ.trace');
+    } finally {
+      probe.disable();
+    }
   });
 });

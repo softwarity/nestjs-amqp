@@ -27,6 +27,10 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/confirmed-publish.component').then((m) => m.ConfirmedPublishComponent),
   },
   {
+    path: 'tracing',
+    loadComponent: () => import('./pages/tracing.component').then((m) => m.TracingComponent),
+  },
+  {
     path: 'retry-and-dlq',
     loadComponent: () => import('./pages/retry-and-dlq.component').then((m) => m.RetryAndDlqComponent),
   },

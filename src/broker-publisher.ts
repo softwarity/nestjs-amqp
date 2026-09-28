@@ -1,10 +1,19 @@
 import { Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { defer, Observable, Subject, type Subscription, throwError } from 'rxjs';
-import { finalize, switchMap, take, timeout } from 'rxjs/operators';
+import { finalize, switchMap, take, tap, timeout } from 'rxjs/operators';
 import { AmqpConnectionError, AmqpPublishError, AmqpTimeoutError } from './amqp.errors';
 import type { EmitConfirmedOptions, EmitOptions, IncomingMessage, SendOptions } from './amqp.types';
 import type { BrokerConnection } from './broker-connection';
+import {
+  errorTypeOf,
+  failSpan,
+  linkToCarriedContext,
+  SpanKind,
+  startMessagingSpan,
+  withSpan,
+} from './telemetry';
+import type { Span } from '@opentelemetry/api';
 
 /**
  * Per-broker high-level publisher. `send()` is request/reply: it ships the
@@ -20,8 +29,9 @@ export class BrokerPublisher {
 
   // Each in-flight `send()` is keyed by its correlation_id. The subject is
   // resolved on reply arrival or completed by `timeout` via the `finalize`
-  // operator (which removes the entry).
-  private readonly pendingReplies = new Map<string, Subject<unknown>>();
+  // operator (which removes the entry). The span is the round trip's own —
+  // see `send()` for why the reply is a link rather than a child.
+  private readonly pendingReplies = new Map<string, PendingReply>();
   private repliesSub?: Subscription;
 
   constructor(private readonly broker: BrokerConnection) {
@@ -41,7 +51,10 @@ export class BrokerPublisher {
 
   stop(): void {
     this.repliesSub?.unsubscribe();
-    this.pendingReplies.forEach((subject) => subject.complete());
+    this.pendingReplies.forEach((pending) => {
+      pending.close('unsent');
+      pending.subject.complete();
+    });
     this.pendingReplies.clear();
   }
 
@@ -67,23 +80,49 @@ export class BrokerPublisher {
         // reply stream — other instances see this id and ignore it.
         const correlationId = `${this.broker.replyPrefix}:${randomUUID()}`;
         const subject = new Subject<TRes>();
-        this.pendingReplies.set(correlationId, subject as Subject<unknown>);
-        this.broker.publish(address, {
-          body: this.broker.encodeBody(payload),
-          properties: {
-            ...opts.properties,
-            reply_to: replyAddr,
-            correlation_id: correlationId,
-          },
-          application_properties: opts.applicationProperties,
+        // A CLIENT span for the whole round trip: it is what shows the caller
+        // waiting, and the publish nests inside it as a PRODUCER span. The
+        // reply is attached as a LINK, not a child — on a shared reply stream
+        // the reply belongs to the consumer's trace, and claiming it as a
+        // descendant of the request would be a fiction.
+        const span = startMessagingSpan({
+          address,
+          brand: this.broker.brand,
+          operationName: 'send',
+          operationType: 'send',
+          kind: SpanKind.CLIENT,
+          conversationId: correlationId,
         });
+        let spanOpen = true;
+        const close = (errorType?: string, err?: unknown): void => {
+          if (!spanOpen) return;
+          spanOpen = false;
+          if (errorType) failSpan(span, errorType, err);
+          else span.end();
+        };
+        this.pendingReplies.set(correlationId, { subject: subject as Subject<unknown>, span, close });
+        withSpan(span, undefined, () =>
+          this.broker.publish(address, {
+            body: this.broker.encodeBody(payload),
+            properties: {
+              ...opts.properties,
+              reply_to: replyAddr,
+              correlation_id: correlationId,
+            },
+            application_properties: opts.applicationProperties,
+          }),
+        );
         return subject.pipe(
           take(1),
           timeout({
             each: timeoutMs,
             with: () => throwError(() => new AmqpTimeoutError(address, correlationId, timeoutMs)),
           }),
-          finalize(() => this.pendingReplies.delete(correlationId)),
+          tap({ error: (err: unknown) => close(errorTypeOf(err), err) }),
+          finalize(() => {
+            close();
+            this.pendingReplies.delete(correlationId);
+          }),
         );
       }),
     );
@@ -153,21 +192,32 @@ export class BrokerPublisher {
       incoming.delivery.accept();
       return;
     }
-    const subject = this.pendingReplies.get(id);
-    if (!subject) {
+    const pending = this.pendingReplies.get(id);
+    if (!pending) {
       this.logger.debug(`reply with unknown correlation_id ${id} - accepting and dropping`);
       incoming.delivery.accept();
       return;
     }
+    // The reply carries the consumer's trace context: link to it, so the round
+    // trip points at the work that answered without pretending to own it.
+    const link = linkToCarriedContext(incoming.message.application_properties);
+    if (link) pending.span.addLink(link);
     try {
       const parsed = this.broker.decodeBody(incoming.message.body);
-      subject.next(parsed);
-      subject.complete();
+      pending.subject.next(parsed);
+      pending.subject.complete();
     } catch (err) {
-      subject.error(err);
+      pending.subject.error(err);
     }
     incoming.delivery.accept();
   }
+}
+
+/** One in-flight `send()`: its reply subject and its round-trip span. */
+interface PendingReply {
+  readonly subject: Subject<unknown>;
+  readonly span: Span;
+  readonly close: (errorType?: string, err?: unknown) => void;
 }
 
 function describeUnknown(err: unknown): string {

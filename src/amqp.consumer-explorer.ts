@@ -7,6 +7,15 @@ import type { AmqpParamMeta, ConsumerMetadata, IncomingMessage, RetryPolicy } fr
 import type { BrokerConnection } from './broker-connection';
 import { BrokerRegistry } from './broker-registry';
 import { AMQP_CONSUMER_METADATA } from './consumers.decorator';
+import {
+  bindToSpan,
+  carriedContext,
+  errorTypeOf,
+  failSpan,
+  SpanKind,
+  startMessagingSpan,
+  withSpan,
+} from './telemetry';
 import { writeTopologyManifestForAllBrands } from './topology-manifest';
 
 /**
@@ -215,33 +224,68 @@ export class AmqpConsumerExplorer implements OnModuleInit, OnModuleDestroy {
     meta: ConsumerMetadata,
     incoming: IncomingMessage,
   ): void {
-    const ctx = buildContext(meta.address, incoming, broker);
-    const args = params.map((p) => resolveArg(p, incoming, ctx, broker));
+    // The `process` span anchors every bit of work this handler does — and it
+    // is a CHILD of the publishing context the message carries, so a consumer
+    // that instruments nothing of its own still shows up inside the trace that
+    // caused it, and inherits that trace's sampling decision. With no context
+    // on the message the span is a root, and the application's sampler decides
+    // whether this service is an entry point (it sees the span name, the kind
+    // and `messaging.destination.name`).
+    const parent = carriedContext(incoming.message.application_properties);
+    const span = startMessagingSpan({
+      address: meta.address,
+      brand: broker.brand,
+      operationName: 'process',
+      operationType: 'process',
+      kind: SpanKind.CONSUMER,
+      messageId: incoming.message.properties?.message_id,
+      conversationId: incoming.message.properties?.correlation_id,
+      parent,
+    });
+    let spanOpen = true;
+    const closeSpan = (errorType?: string, err?: unknown): void => {
+      if (!spanOpen) return;
+      spanOpen = false;
+      if (errorType) failSpan(span, errorType, err);
+      else span.end();
+    };
 
-    let result: unknown;
-    try {
-      result = method.apply(instance, args);
-    } catch (err) {
-      this.logger.warn(`handler '${meta.address}' threw: ${describe(err)}`);
-      if (!ctx.settled) applyErrorPolicy(meta.options, ctx.deliveryCount, incoming.delivery, err);
-      return;
-    }
+    // Everything below runs with the span active, which is what makes the
+    // auto-reply publish a child of it. The Observable callbacks are bound
+    // explicitly: they fire on a later tick, where the ambient context is gone.
+    withSpan(span, parent, () => {
+      const ctx = buildContext(meta.address, incoming, broker);
+      const args = params.map((p) => resolveArg(p, incoming, ctx, broker));
 
-    if (isObservable(result)) {
-      result.subscribe({
-        next: (value: unknown) => this.replyIfRequested(broker, incoming, value),
-        complete: () => {
-          if (!ctx.settled) incoming.delivery.accept();
-        },
-        error: (err: unknown) => {
-          this.logger.warn(`handler '${meta.address}' Observable errored: ${describe(err)}`);
-          if (!ctx.settled) applyErrorPolicy(meta.options, ctx.deliveryCount, incoming.delivery, err);
-        },
-      });
-      return;
-    }
-    if (result !== undefined) this.replyIfRequested(broker, incoming, result);
-    if (!ctx.settled) incoming.delivery.accept();
+      let result: unknown;
+      try {
+        result = method.apply(instance, args);
+      } catch (err) {
+        this.logger.warn(`handler '${meta.address}' threw: ${describe(err)}`);
+        if (!ctx.settled) applyErrorPolicy(meta.options, ctx.deliveryCount, incoming.delivery, err);
+        closeSpan(errorTypeOf(err), err);
+        return;
+      }
+
+      if (isObservable(result)) {
+        result.subscribe({
+          next: bindToSpan(span, parent, (value: unknown) => this.replyIfRequested(broker, incoming, value)),
+          complete: bindToSpan(span, parent, () => {
+            if (!ctx.settled) incoming.delivery.accept();
+            closeSpan();
+          }),
+          error: bindToSpan(span, parent, (err: unknown) => {
+            this.logger.warn(`handler '${meta.address}' Observable errored: ${describe(err)}`);
+            if (!ctx.settled) applyErrorPolicy(meta.options, ctx.deliveryCount, incoming.delivery, err);
+            closeSpan(errorTypeOf(err), err);
+          }),
+        });
+        return;
+      }
+      if (result !== undefined) this.replyIfRequested(broker, incoming, result);
+      if (!ctx.settled) incoming.delivery.accept();
+      closeSpan();
+    });
   }
 
   private replyIfRequested(broker: BrokerConnection, incoming: IncomingMessage, value: unknown): void {

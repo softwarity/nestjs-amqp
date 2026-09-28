@@ -14,6 +14,9 @@ export const received = {
   dlqHolding: new Subject<unknown>(),
   codec: new Subject<unknown>(),
   locator: new Subject<unknown>(),
+  /** Carries the application properties too — that's where the library puts
+   *  the W3C trace context, so this is how a test sees what reached the wire. */
+  trace: new Subject<{ body: unknown; applicationProperties: Record<string, unknown> }>(),
 };
 
 export const config = {

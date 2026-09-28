@@ -1,5 +1,5 @@
 import { Injectable, Module } from '@nestjs/common';
-import { Consume, Subscribe } from '../../src';
+import { AmqpAppProperties, AmqpBody, Consume, Subscribe } from '../../src';
 import { config, counters, received } from './test-state';
 
 /**
@@ -76,6 +76,15 @@ export class LocatorConsumer {
 }
 
 @Injectable()
+export class TraceConsumer {
+  /** Reports what actually crossed the broker, trace context included. */
+  @Consume('integ.trace')
+  onTrace(@AmqpBody() body: unknown, @AmqpAppProperties() applicationProperties: Record<string, unknown>): void {
+    received.trace.next({ body, applicationProperties });
+  }
+}
+
+@Injectable()
 export class DlqHoldingObserver {
   /** Observes messages routed to the broker DLQ. Used by the DLQ scenario to
    *  confirm the failed payload actually landed at the catch-all DLQ. */
@@ -94,6 +103,7 @@ export class DlqHoldingObserver {
     DlqConsumer,
     CodecConsumer,
     LocatorConsumer,
+    TraceConsumer,
     DlqHoldingObserver,
   ],
 })
