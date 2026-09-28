@@ -2,6 +2,24 @@
 
 ## NEXT RELEASE
 
+### Fixes
+
+- **A link the broker refuses for good no longer takes the whole connection down with it.** Observed on RabbitMQ 4.3.6 with a reply stream missing broker-side: the failed attach takes its session with it, rhea reconnects, the library re-attaches, and each turn of that loop consumes a channel number. Around the 64th, the broker answers `channel number (64) exceeds maximum channel number (63)` and closes the connection — after which the service stays **connected to nothing, permanently**, behind a wall of warnings that never names the cause. It took about a second to get there.
+
+  The library now tells a topology problem from a network one. On a permanent condition — `amqp:not-found`, `amqp:unauthorized-access`, `amqp:not-allowed` — it stops re-attaching instead of looping:
+
+  - **Reply stream**: one `ERROR` naming the queue and saying what to do, then no further attempts for the life of the process. `send()` fails immediately with that reason instead of waiting out its timeout; `emit()`, `emitConfirmed()` and consumers are untouched.
+  - **A publish address**: the dead sender leaves the pool and the address is marked for the current connection, so a publish loop stops opening a session per message. `emit()` returns `false` (its documented contract for a dropped message) and `emitConfirmed()` errors with `unsent` and the AMQP condition. The mark is cleared on the next `connection_open` — a queue declared in the meantime is picked up.
+
+  Transient failures keep the existing retry behaviour: only conditions that retrying cannot fix are treated this way.
+
+- **`messaging.destination.name` now reports the address as written**, including on the request/reply path. The reply publish targets the `reply_to` the requester put on the wire — necessarily the broker-specific form, so that a responder written against another library can use it verbatim — which made one span in a request/reply trace report `/queues/x` while its siblings reported `x`, breaking grouping by destination. The attribute is normalised for telemetry only; nothing changes on the wire. Spotted on a real trace in a cluster, not in a test.
+
+### Internal changes
+
+- `test/link-failures.spec.ts` holds both halves of the fix: no re-attach across five reconnects, a single error rather than a wall of warnings, `send()` failing fast, `emit()` / `emitConfirmed()` / consumers unaffected, the per-connection reset, and transient failures still retried. The rhea fake now records every receiver attached and counts sender attaches — a leak shows up as growth.
+- The RabbitMQ integration scenario that asserted `emit()` returned its optimistic `true` on a refused address now asserts `false`: that assertion encoded the bug.
+
 ---
 
 ## 1.2.0

@@ -33,8 +33,10 @@ import { CodeComponent } from '../code/code.component';
         </tr>
         <tr>
           <td><code>AmqpConnectionError</code></td>
-          <td>Connection-level issues; <code>send()</code> called when AMQP is disabled or no reply
-            stream is configured on the broker.</td>
+          <td>Connection-level issues; <code>send()</code> called when AMQP is disabled, when no reply
+            stream is configured, or when the broker <strong>refused</strong> the configured reply stream
+            (missing queue, permission denied) — in which case it fails immediately, with the AMQP
+            condition, rather than waiting out its timeout.</td>
         </tr>
         <tr>
           <td><code>AmqpTimeoutError</code></td>

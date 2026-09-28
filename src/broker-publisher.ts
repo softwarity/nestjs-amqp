@@ -72,6 +72,19 @@ export class BrokerPublisher {
           ),
       );
     }
+    const unusable = this.broker.replyStreamUnavailable;
+    if (unusable) {
+      // The reply will never come: the stream itself was refused by the
+      // broker. Say so now rather than let every call wait out its timeout.
+      return throwError(
+        () =>
+          new AmqpConnectionError(
+            `Broker '${this.broker.options.name}': the reply stream ` +
+              `'${this.broker.options.replyStreamAddress}' is unusable (${unusable}). ` +
+              `Declare it broker-side and restart; emit() and emitConfirmed() are unaffected.`,
+          ),
+      );
+    }
     const timeoutMs = opts.timeoutMs ?? this.broker.options.defaultSendTimeoutMs;
     return this.broker.replyToAddress$.pipe(
       take(1),

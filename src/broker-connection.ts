@@ -26,6 +26,17 @@ import type { Span } from '@opentelemetry/api';
  *  the product string — falls back to AMQP-standard behaviour everywhere. */
 export type BrokerBrand = 'rabbitmq' | 'artemis' | 'qpid' | 'unknown';
 
+/**
+ * Link errors that retrying cannot fix: the topology or the permissions are
+ * wrong broker-side. Everything else (a dropped connection, an internal error)
+ * stays on the normal retry path.
+ */
+const PERMANENT_LINK_CONDITIONS = new Set([
+  'amqp:not-found',
+  'amqp:unauthorized-access',
+  'amqp:not-allowed',
+]);
+
 /** The four AMQP 1.0 delivery outcomes a publisher can be told about.
  *  `'accepted'` is the only success: every target queue took the message
  *  (on a quorum queue, a majority of replicas wrote it to disk). */
@@ -61,6 +72,16 @@ export class BrokerConnection {
   private connection?: Connection;
   private replyReceiver?: Receiver;
   private readonly senders = new Map<string, Sender>();
+
+  /** Why the reply stream is unusable, once a permanent failure has been seen.
+   *  Sticky for the life of the process: the cause is broker-side topology or
+   *  permissions, and re-attaching costs a session — a channel — every time. */
+  private replyStreamFailure?: string;
+  /** Addresses whose link the broker refused for a reason retrying cannot fix,
+   *  with the description. Cleared on every `connection_open`: a fresh
+   *  connection deserves a fresh attempt, and the topology may have been
+   *  declared in the meantime. */
+  private readonly unusableAddresses = new Map<string, string>();
 
   /** In-flight confirmed publishes, keyed by `<broker address>#<delivery id>`
    *  — the correlation the broker's disposition frames carry back. An entry
@@ -127,6 +148,13 @@ export class BrokerConnection {
     return this.brandDetected;
   }
 
+  /** Set when the configured reply stream turned out to be unusable — a
+   *  missing queue, a permission denied. `send()` then fails immediately with
+   *  this reason instead of waiting out its timeout. */
+  get replyStreamUnavailable(): string | undefined {
+    return this.replyStreamFailure;
+  }
+
   /** Raw product string from the peer's Open frame, if any. */
   get peerProduct(): string | undefined {
     return this.brandProduct;
@@ -176,6 +204,9 @@ export class BrokerConnection {
     this.connection = conn;
 
     conn.on('connection_open', () => {
+      // A new connection is a new chance: an address refused a moment ago may
+      // have been declared broker-side since.
+      this.unusableAddresses.clear();
       this.detectBrand(conn);
       this.logger.log(
         `connection_open to ${this.options.url}${this.brandProduct ? ` (peer: ${this.brandProduct}${this.brandVersion ? ` ${this.brandVersion}` : ''})` : ''}`,
@@ -287,7 +318,16 @@ export class BrokerConnection {
       failSpan(span, 'unsent');
       return false;
     }
-    const sender = this.getOrCreateSender(conn, this.toBrokerAddress(address));
+    const brokerAddress = this.toBrokerAddress(address);
+    const refused = this.unusableAddresses.get(brokerAddress);
+    if (refused !== undefined) {
+      // Logged loudly when the link first failed; at debug here so a publish
+      // loop doesn't drown the reason that matters.
+      this.logger.debug(`publish to '${address}' dropped — ${refused}`);
+      failSpan(span, 'unsent');
+      return false;
+    }
+    const sender = this.getOrCreateSender(conn, brokerAddress);
     sender.send(toRheaOutgoing(outgoing));
     span.end();
     return true;
@@ -307,7 +347,7 @@ export class BrokerConnection {
     const carrier: Record<string, unknown> = { ...(message.application_properties ?? {}) };
     const carried = linkToCarriedContext(carrier);
     const span = startMessagingSpan({
-      address,
+      address: this.toUserAddress(address),
       brand: this.brandDetected,
       operationName: 'send',
       operationType: 'send',
@@ -372,6 +412,12 @@ export class BrokerConnection {
         return;
       }
       const brokerAddress = this.toBrokerAddress(address);
+      const refused = this.unusableAddresses.get(brokerAddress);
+      if (refused !== undefined) {
+        closeSpan('unsent');
+        subscriber.error(new AmqpPublishError(address, 'unsent', refused));
+        return;
+      }
       const sender = this.getOrCreateSender(conn, brokerAddress);
       const pending: PendingConfirm = {
         address,
@@ -453,6 +499,10 @@ export class BrokerConnection {
     if (this.replyReceiver?.is_open()) return;
     const replyStream = this.options.replyStreamAddress;
     if (!replyStream) return;
+    // Already known unusable: re-attaching would fail the same way, and each
+    // attempt opens a session the broker never gets back. That loop is what
+    // exhausts the channel numbers and kills the connection for good.
+    if (this.replyStreamFailure) return;
     const address = this.toBrokerAddress(replyStream);
     // Subscribe to the broadcast reply stream starting at the most recent
     // offset (`next` = only messages produced AFTER our attach). A reconnect
@@ -480,12 +530,43 @@ export class BrokerConnection {
       this.repliesSubject.next({ address, message, delivery: ctx.delivery });
     });
     receiver.on('receiver_error', (ctx) => {
+      if (this.giveUpOnReplyStream(replyStream, extractAmqpError(ctx), receiver)) return;
       this.logger.warn(`reply receiver_error: ${describeAmqpError(extractAmqpError(ctx))}`);
     });
     receiver.on('receiver_close', (ctx) => {
       const err = extractAmqpError(ctx);
-      if (err) this.logger.warn(`reply receiver closed by peer: ${describeAmqpError(err)}`);
+      if (!err) return;
+      if (this.giveUpOnReplyStream(replyStream, err, receiver)) return;
+      this.logger.warn(`reply receiver closed by peer: ${describeAmqpError(err)}`);
     });
+  }
+
+  /**
+   * Record a reply stream the broker will never hand over — a missing queue, a
+   * permission denied — and stop trying.
+   *
+   * Retrying is not just useless here, it is destructive: the failed attach
+   * takes the session down with it, rhea reconnects, we re-attach, and each
+   * turn of that loop consumes a channel number. RabbitMQ allows 64 per
+   * connection, so a misconfigured reply stream would take the service from
+   * healthy to permanently disconnected in about a second, behind a wall of
+   * warnings. One explicit error and a definitive stop are far more useful.
+   *
+   * Returns true when it has taken charge of the error.
+   */
+  private giveUpOnReplyStream(replyStream: string, err: unknown, receiver: Receiver): boolean {
+    const { condition } = amqpErrorFields(err);
+    if (!condition || !PERMANENT_LINK_CONDITIONS.has(condition)) return false;
+    if (this.replyStreamFailure) return true;
+    this.replyStreamFailure = describeAmqpError(err);
+    this.logger.error(
+      `reply stream '${replyStream}' is unusable: ${this.replyStreamFailure}. ` +
+        `This is a topology problem, not a network one — declare it broker-side (a stream queue) and restart. ` +
+        `send() now fails immediately instead of retrying; emit(), emitConfirmed() and consumers are unaffected.`,
+    );
+    if (receiver.is_open()) receiver.close();
+    this.replyReceiver = undefined;
+    return true;
   }
 
   private getOrCreateSender(conn: Connection, address: string): Sender {
@@ -503,6 +584,15 @@ export class BrokerConnection {
       // produce a verdict for what it was carrying — fail those callers now
       // rather than make them sit out the confirm timeout.
       this.failConfirmsOnSender(sender, `the link to '${address}' failed: ${describeAmqpError(err)}`, err);
+      // And when the refusal is one retrying cannot fix, stop re-attaching:
+      // the pooled sender is dead, so every later publish would open a fresh
+      // session — a channel each — until the broker cuts the connection.
+      const { condition } = amqpErrorFields(err);
+      if (condition && PERMANENT_LINK_CONDITIONS.has(condition)) {
+        this.unusableAddresses.set(address, describeAmqpError(err));
+        this.senders.delete(address);
+        if (sender.is_open()) sender.close();
+      }
     });
     // The four delivery outcomes. Only `accepted` means the broker took
     // responsibility for the message; `released` (nothing matched the routing
@@ -576,6 +666,23 @@ export class BrokerConnection {
       `stream offset '${String(offset)}' not applied on '${address}' — peer is ${this.brandDetected}, not RabbitMQ`,
     );
     return {};
+  }
+
+  /**
+   * The reverse of {@link toBrokerAddress}, for telemetry only: report the
+   * address as a developer writes it.
+   *
+   * Most publishes already carry that form, but not all — the reply path
+   * publishes to the `reply_to` the requester put on the wire, which has to be
+   * the broker-specific form so that a responder written against another
+   * library can use it verbatim. Without this, one span in a request/reply
+   * trace would report `/queues/x` while its siblings report `x`, which breaks
+   * grouping by destination for no good reason.
+   */
+  private toUserAddress(address: string): string {
+    const prefix = '/queues/';
+    if (this.brandDetected === 'rabbitmq' && address.startsWith(prefix)) return address.slice(prefix.length);
+    return address;
   }
 
   /**

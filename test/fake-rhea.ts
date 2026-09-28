@@ -98,8 +98,44 @@ export class FakeSender extends FakeEmitter {
   }
 }
 
+export class FakeReceiver extends FakeEmitter {
+  opened = true;
+  readonly credits: number[] = [];
+
+  constructor(readonly address: string) {
+    super();
+  }
+
+  add_credit(n: number): void {
+    this.credits.push(n);
+  }
+
+  set_credit_window(): void {}
+
+  close(): void {
+    this.opened = false;
+  }
+
+  detach(): void {
+    this.opened = false;
+  }
+
+  is_open(): boolean {
+    return this.opened;
+  }
+
+  is_closed(): boolean {
+    return !this.opened;
+  }
+}
+
 export class FakeConnection extends FakeEmitter {
   readonly senders = new Map<string, FakeSender>();
+  /** Every receiver ever attached, in order — a leak shows up as growth here. */
+  readonly receivers: FakeReceiver[] = [];
+  /** How many times a sender link was actually attached (each one costs the
+   *  broker a session, which is what the channel-exhaustion bug was about). */
+  openedSenders = 0;
   opened = true;
 
   open_sender(options: { target?: { address?: string } } | string): FakeSender {
@@ -108,11 +144,16 @@ export class FakeConnection extends FakeEmitter {
     if (existing?.is_open()) return existing;
     const sender = new FakeSender();
     this.senders.set(address, sender);
+    this.openedSenders += 1;
     return sender;
   }
 
-  open_receiver(): never {
-    throw new Error('not used in these tests');
+  open_receiver(options: { source?: { address?: string } | string } | string): FakeReceiver {
+    const source = typeof options === 'string' ? options : options.source;
+    const address = typeof source === 'string' ? source : (source?.address ?? '');
+    const receiver = new FakeReceiver(address);
+    this.receivers.push(receiver);
+    return receiver;
   }
 
   close(): void {

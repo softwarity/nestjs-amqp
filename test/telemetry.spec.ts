@@ -213,6 +213,22 @@ describe('OpenTelemetry instrumentation', () => {
     });
   });
 
+  it('reports the address as written, even when publishing to the broker-rewritten form', () => {
+    // The reply path publishes to the `reply_to` the requester put on the
+    // wire, which on RabbitMQ is '/queues/x' — it has to be, so that a
+    // responder written against another library can use it verbatim. The span
+    // must still say 'x', or one span in a request/reply trace disagrees with
+    // its siblings and grouping by destination breaks.
+    const { broker, conn } = startBroker();
+    Object.assign(conn, { remote: { open: { properties: { product: 'RabbitMQ' } } } });
+    conn.fire('connection_open');
+
+    inSpan('reply', () => broker.publish('/queues/svc.replies', { body: '{}' }));
+
+    const span = only('send svc.replies');
+    expect(span.attributes['messaging.destination.name']).toBe('svc.replies');
+  });
+
   describe('emitConfirmed() — the span carries the broker verdict', () => {
     it('stays open until the verdict, then ends clean on accepted', () => {
       const { broker, conn } = startBroker();

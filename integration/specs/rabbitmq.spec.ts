@@ -137,7 +137,9 @@ describe('RabbitMQ — single broker scenarios', () => {
     // a broker that accepts the attach and drops the message answers
     // 'released'. Either way the caller is told, which is the whole point.
     expect(['unsent', 'released']).toContain((err as AmqpPublishError).outcome);
-    // ... and emit() on the same address still returns its optimistic true.
-    expect(amqp.queue('integ.nowhere-at-all').emit({ lost: true })).toBe(true);
+    // And once the broker has refused the link, emit() stops pretending: it
+    // returns false rather than opening a fresh session — a channel — for
+    // every publish to an address that will keep being refused.
+    expect(amqp.queue('integ.nowhere-at-all').emit({ lost: true })).toBe(false);
   });
 });

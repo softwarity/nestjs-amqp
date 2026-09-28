@@ -19,6 +19,8 @@
 >
 > **This library does NOT create topology at runtime.** It opens senders and receivers on destinations that **must already exist** on the broker — queues, streams, exchanges, DLX bindings, the lot. Missing topology = silent failure (the AMQP link is rejected with `amqp:not-found`; the rest of the connection stays up and the app looks healthy).
 >
+> Since 1.2.1 the library at least *names* the problem: a link the broker refuses for good (`amqp:not-found`, a permission denied) is reported once as an `ERROR` and not retried — `send()` then fails immediately, and a publish to a refused address returns `false` instead of pretending. It still cannot create anything for you.
+>
 > Declare everything broker-side via a definitions file or an IaC script. Full examples for **RabbitMQ 4.x** (`definitions.json` + docker-compose), **ActiveMQ Artemis** (`broker.xml`), and **Apache Qpid** live on the [doc site](https://softwarity.github.io/nestjs-amqp/#/broker-topology).
 
 ---
@@ -608,7 +610,7 @@ Default `JsonBodyCodec`:
 
 | Class | Where it surfaces |
 |---|---|
-| `AmqpConnectionError` | Connection-level issues, `send()` when AMQP is disabled or no reply stream is configured on the broker |
+| `AmqpConnectionError` | Connection-level issues, `send()` when AMQP is disabled, when no reply stream is configured, or when the broker refused the configured reply stream (missing queue, permission denied) |
 | `AmqpTimeoutError` | `send()` Observable when no reply arrives in time. Carries `address`, `correlationId`, `timeoutMs` |
 | `AmqpPublishError` | `emitConfirmed()` Observable when the broker didn't take the message. Carries `address`, `outcome` (`released` / `rejected` / `modified` / `unsent` / `disconnected` / `timeout`), `reason`, and the AMQP `condition` / `description` when the broker reported one |
 | `AmqpHandlerError` | Reserved for future use |
