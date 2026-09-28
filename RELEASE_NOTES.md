@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 1.3.1
+
 ### Fixes
 
 - **`messaging.destination.name` on the metrics reported the broker-rewritten address.** The normalisation added in 1.2.1 covered the span path only, so 1.3.0 shipped metrics carrying `/queues/x` where the span of the same publish said `x` — visible on the request/reply path, where the reply targets the `reply_to` from the wire.
