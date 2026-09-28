@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 1.2.1
+
 ### Fixes
 
 - **A link the broker refuses for good no longer takes the whole connection down with it.** Observed on RabbitMQ 4.3.6 with a reply stream missing broker-side: the failed attach takes its session with it, rhea reconnects, the library re-attaches, and each turn of that loop consumes a channel number. Around the 64th, the broker answers `channel number (64) exceeds maximum channel number (63)` and closes the connection — after which the service stays **connected to nothing, permanently**, behind a wall of warnings that never names the cause. It took about a second to get there.
