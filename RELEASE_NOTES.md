@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 1.3.0
+
 ### Changes
 
 - **Messaging metrics, on the same contract as the traces.** Four instruments, the API alone, no configuration, no option, nothing to enable:
