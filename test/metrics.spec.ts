@@ -156,6 +156,22 @@ describe('Metrics', () => {
       expect(duration!.sum).toBeGreaterThan(0.02);
     });
 
+    it('reports the address as written, not the broker-rewritten form', async () => {
+      // The span path had this test since 1.2.1; the metric path did not, and
+      // shipped 1.3.0 with the raw address. Aggregation makes it worse than on
+      // a span: one queue would carry two labels depending on the instrument.
+      const { broker, conn } = startBroker();
+      Object.assign(conn, { remote: { open: { properties: { product: 'RabbitMQ' } } } });
+      conn.fire('connection_open');
+
+      broker.publish('/queues/svc.replies', { body: '{}' });
+
+      for (const metric of ['messaging.client.sent.messages', 'messaging.client.operation.duration']) {
+        const [point] = pointsFor(await collect(), metric);
+        expect(point!.attributes['messaging.destination.name']).toBe('svc.replies');
+      }
+    });
+
     it('picks up a MeterProvider registered after the first publish', async () => {
       // The metrics API has no equivalent of the tracer's proxy: a meter taken
       // before the SDK registers would stay a no-op for the life of the

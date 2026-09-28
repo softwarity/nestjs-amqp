@@ -2,6 +2,14 @@
 
 ## NEXT RELEASE
 
+### Fixes
+
+- **`messaging.destination.name` on the metrics reported the broker-rewritten address.** The normalisation added in 1.2.1 covered the span path only, so 1.3.0 shipped metrics carrying `/queues/x` where the span of the same publish said `x` — visible on the request/reply path, where the reply targets the `reply_to` from the wire.
+
+  It matters more on a metric than on a span: a span is read one at a time, a metric is aggregated. One queue carried two labels depending on the instrument, which breaks grouping by destination and stops a dashboard correlating with a trace. Reported from a real `:9464/metrics` scrape, not found in a test.
+
+  The address telemetry names is now resolved **once per publish** and handed to both the span and the metric, so the two cannot disagree again — the regression was possible because each derived it on its own. The test that covered it for spans since 1.2.1 now has its counterpart on the metrics.
+
 ---
 
 ## 1.3.0

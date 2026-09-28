@@ -315,9 +315,12 @@ export class BrokerConnection {
     if (!this.options.enabled) return false;
     const startedAt = startClock();
     const conn = this.connection;
-    const { message: outgoing, span } = this.prepareOutgoing(address, message);
+    // Resolved once and handed to both the span and the metric: they reported
+    // different labels for one queue when each derived it on its own.
+    const reported = this.toUserAddress(address);
+    const { message: outgoing, span } = this.prepareOutgoing(reported, message);
     const measure = (errorType?: string): void =>
-      recordPublish({ address, brand: this.brandDetected, startedAt, errorType });
+      recordPublish({ address: reported, brand: this.brandDetected, startedAt, errorType });
     if (!conn?.is_open()) {
       this.logger.warn(`publish to '${address}' dropped — connection not open`);
       failSpan(span, 'unsent');
@@ -350,12 +353,16 @@ export class BrokerConnection {
    * message that **already** carries a context — a DLQ replay, above all —
    * keeps it and gets a span link instead, so a dead letter stays correlated
    * with the publication that produced it.
+   *
+   * `reported` is the address telemetry names — the caller resolves it once,
+   * from the one that goes on the wire, so the span and the metric cannot
+   * disagree about a queue the way they did in 1.3.0.
    */
-  private prepareOutgoing(address: string, message: Message): { message: Message; span: Span } {
+  private prepareOutgoing(reported: string, message: Message): { message: Message; span: Span } {
     const carrier: Record<string, unknown> = { ...(message.application_properties ?? {}) };
     const carried = linkToCarriedContext(carrier);
     const span = startMessagingSpan({
-      address: this.toUserAddress(address),
+      address: reported,
       brand: this.brandDetected,
       operationName: 'send',
       operationType: 'send',
@@ -403,7 +410,8 @@ export class BrokerConnection {
       // open until the broker's verdict, so its duration is the confirm
       // latency, not the handoff to rhea.
       const startedAt = startClock();
-      const { message: outgoing, span } = this.prepareOutgoing(address, message);
+      const reported = this.toUserAddress(address);
+      const { message: outgoing, span } = this.prepareOutgoing(reported, message);
       let spanOpen = true;
       const closeSpan = (errorType?: string, err?: unknown): void => {
         if (!spanOpen) return;
@@ -413,7 +421,7 @@ export class BrokerConnection {
         // Measured at the same instant as the span: for a confirmed publish
         // that is the broker's verdict, so the histogram is confirm latency
         // and `error.type` is the outcome people alert on.
-        recordPublish({ address, brand: this.brandDetected, startedAt, errorType });
+        recordPublish({ address: reported, brand: this.brandDetected, startedAt, errorType });
       };
 
       const conn = this.connection;
